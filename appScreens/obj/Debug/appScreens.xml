@@ -1,0 +1,79 @@
+﻿<?xml version="1.0"?>
+<doc>
+<assembly>
+<name>
+appScreens
+</name>
+</assembly>
+<members>
+<member name="T:appScreens.My.Resources.Resources">
+<summary>
+  A strongly-typed resource class, for looking up localized strings, etc.
+</summary>
+</member>
+<member name="P:appScreens.My.Resources.Resources.ResourceManager">
+<summary>
+  Returns the cached ResourceManager instance used by this class.
+</summary>
+</member>
+<member name="P:appScreens.My.Resources.Resources.Culture">
+<summary>
+  Overrides the current thread's CurrentUICulture property for all
+  resource lookups using this strongly typed resource class.
+</summary>
+</member>
+<member name="M:appScreens.ClickEnVentana.SimularClickEnVentana(System.String,System.Int32,System.Int32)">
+ <summary>
+ Simula clic en coordenadas relativas dentro de una ventana
+ </summary>
+</member>
+<member name="T:appScreens.ConfigManager">
+ <summary>
+ Administra la configuración de la aplicación de manera dinámica
+ </summary>
+</member>
+<member name="M:appScreens.ConfigManager.GetConfigValue(System.String,System.String)">
+ <summary>
+ Obtiene un valor de configuración del app.config o usa un valor por defecto
+ </summary>
+</member>
+<member name="M:appScreens.ConfigManager.ValidateConfiguration">
+ <summary>
+ Valida que las rutas de archivos existan y sean accesibles
+ </summary>
+</member>
+<member name="M:appScreens.ConfigManager.ValidateDirectory(System.String)">
+ <summary>
+ Valida o crea un directorio si no existe
+ </summary>
+</member>
+<member name="M:appScreens.Form1.wb_beep">
+ <summary>
+ Manda sonido de beep a la página web
+ </summary>
+</member>
+<member name="M:appScreens.Form1.wb_RevisaEstadusDevices">
+ <summary>
+ Interface para revisar los estatus de los dispositivos a la página web
+ </summary>
+</member>
+<member name="M:appScreens.Form1.clickPage(System.String)">
+ <summary>
+ Evento a la pagina NDC.
+ </summary>
+ <param name="sPotition">posicion de la FDK</param>
+</member>
+<member name="M:appScreens.Form1.getVar(System.String)">
+ <summary>
+ Obtiene el valor de una variable NDC.
+ </summary>
+ <param name="sVar">Nombre de la variable</param>
+ <returns>Valor de la variable</returns>
+</member>
+<member name="M:appScreens.Form1.setBack">
+ <summary>
+ Regresa a la pantalla anterior.
+ </summary>
+</member>
+</members>
+</doc>
