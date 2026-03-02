@@ -1,6 +1,7 @@
 ﻿Imports System.IO
 Imports System.Net.Mime.MediaTypeNames
 Imports System.Security.Permissions
+Imports System.Threading.Tasks
 
 <PermissionSet(SecurityAction.Demand, Name:="FullTrust")>
 <System.Runtime.InteropServices.ComVisibleAttribute(True)>
@@ -108,6 +109,9 @@ Public Class Form1
 
             'Trace("Set security IE")
             SetBrowserFeatureControl()
+
+            ' Agregar manejador DocumentCompleted para chequear cassettes cuando el documento esté listo
+            AddHandler WebBrowser1.DocumentCompleted, AddressOf WebBrowser1_DocumentCompleted
         Catch ex As Exception
             Trace("Error init browser")
         End Try
@@ -136,11 +140,13 @@ Public Class Form1
                 Trace("[Timer1_Tick] [Info] Screen: " + sValue)
 
 
-                If sValue <> "701" Then
-                    ProcesarPantalla(sValue)
-                Else
-                    Trace("701 No procesa nada")
-                End If
+                'If sValue <> "701" Then
+                '    ProcesarPantalla(sValue)
+                'Else
+                '    Trace("701 No procesa nada")
+                'End If
+
+                ProcesarPantalla(sValue)
 
 
             End If
@@ -198,14 +204,58 @@ Public Class Form1
     ''' </summary>
     Public Sub wb_RevisaEstadusDevices()
         Try
-            'Trace("RevisaEstatusDevices Activar")
+            Trace("wb_RevisaEstadusDevices called")
             sErrorImpresora = ""
+            ' Ejecutar comprobación inmediata de cassettes en segundo plano
+            Task.Run(Sub()
+                         Try
+                             Dim anyZero As Boolean = AreAnyCassettesEmpty()
+                             Trace("AreAnyCassettesEmpty returned: " & anyZero)
+                             If Me IsNot Nothing AndAlso Not Me.IsDisposed Then
+                                 Me.BeginInvoke(Sub()
+                                                    Try
+                                                        If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
+                                                            Trace("WebBrowser1.Document is Nothing in wb_RevisaEstadusDevices")
+                                                            Return
+                                                        End If
+
+                                                        If anyZero Then
+                                                            Trace("Calling hideBtnRetiro from wb_RevisaEstadusDevices")
+                                                            WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                                                        Else
+                                                            Trace("Calling showBtnRetiro from wb_RevisaEstadusDevices")
+                                                            WebBrowser1.Document.InvokeScript("showBtnRetiro")
+                                                        End If
+                                                    Catch ex As Exception
+                                                        Trace("Error invoking cassette script: " & ex.Message)
+                                                    End Try
+                                                End Sub)
+                             End If
+                         Catch ex As Exception
+                             Trace("Error tarea comprobación cassettes: " & ex.Message)
+                         End Try
+                     End Sub)
+
             tmMsgDevices.Enabled = True
         Catch ex As Exception
-            Trace("Error en wb_beep: " & ex.Message)
+            Trace("Error en wb_RevisaEstadusDevices: " & ex.Message)
         End Try
 
     End Sub
+
+    Private Function AreAnyCassettesEmpty() As Boolean
+        Try
+            Dim cass1 As String = ReadIni("CDM_COUNTER", "CASSETTE1", ConfigManager.workFileDevices).Trim()
+            Dim cass2 As String = ReadIni("CDM_COUNTER", "CASSETTE2", ConfigManager.workFileDevices).Trim()
+            Dim cass3 As String = ReadIni("CDM_COUNTER", "CASSETTE3", ConfigManager.workFileDevices).Trim()
+            Dim cass4 As String = ReadIni("CDM_COUNTER", "CASSETTE4", ConfigManager.workFileDevices).Trim()
+
+            Return (cass1 = "0" OrElse cass2 = "0" OrElse cass3 = "0" OrElse cass4 = "0")
+        Catch ex As Exception
+            Trace("Error AreAnyCassettesEmpty: " & ex.Message)
+            Return False
+        End Try
+    End Function
 
     ''' <summary>
     ''' Evento a la pagina NDC.
@@ -758,6 +808,8 @@ Public Class Form1
 
         checkEstusCdm()
 
+        checkEstusCassettes()
+
         killSupervisor()
 
 
@@ -805,6 +857,35 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub checkEstusCassettes()
+        Try
+            ' Leemos los valores. Usamos .Trim() para limpiar espacios invisibles
+            Dim cass1 As String = ReadIni("CDM_COUNTER", "CASSETTE1", ConfigManager.workFileDevices).Trim()
+            Dim cass2 As String = ReadIni("CDM_COUNTER", "CASSETTE2", ConfigManager.workFileDevices).Trim()
+            Dim cass3 As String = ReadIni("CDM_COUNTER", "CASSETTE3", ConfigManager.workFileDevices).Trim()
+            Dim cass4 As String = ReadIni("CDM_COUNTER", "CASSETTE4", ConfigManager.workFileDevices).Trim()
+
+            Trace("Cassettes: C1=" & cass1 & " C2=" & cass2 & " C3=" & cass3 & " C4=" & cass4)
+
+            ' Validar que el WebBrowser tiene un Document cargado
+            If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
+                Trace("WebBrowser1.Document is Nothing, cannot invoke script")
+                Return
+            End If
+
+            ' Si cualquiera está en "0"
+            If cass1 = "0" OrElse cass2 = "0" OrElse cass3 = "0" OrElse cass4 = "0" Then
+                Trace("Invocando hideBtnRetiro (cassettes en 0)")
+                WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+            Else
+                Trace("Invocando showBtnRetiro (cassettes con dinero)")
+                WebBrowser1.Document.InvokeScript("showBtnRetiro")
+            End If
+        Catch ex As Exception
+            Trace("Error en checkEstusCassettes: " & ex.Message)
+        End Try
+    End Sub
+
     Private Sub killSupervisor()
         Try
             Dim nombreProceso As String = "appConfigurador.exe" ' Reemplaza con el nombre real del proceso
@@ -829,8 +910,39 @@ Public Class Form1
         Trace("Cerrando appScreens")
     End Sub
 
+    Private Sub WebBrowser1_DocumentCompleted(sender As Object, e As WebBrowserDocumentCompletedEventArgs)
+        Try
+            ' Solo procesar cuando el documento principal esté cargado (no iframes)
+            If e.Url.AbsolutePath = WebBrowser1.Url.AbsolutePath Then
+                Trace("DocumentCompleted: " & e.Url.ToString())
+
+                ' Dar un pequeño delay para asegurar que todo el DOM está listo
+                Threading.Thread.Sleep(100)
+
+                ' Invocar comprobación de cassettes directamente
+                If WebBrowser1.Document IsNot Nothing Then
+                    Try
+                        Dim anyZero As Boolean = AreAnyCassettesEmpty()
+                        Trace("DocumentCompleted - AreAnyCassettesEmpty: " & anyZero)
+
+                        If anyZero Then
+                            Trace("DocumentCompleted - Calling hideBtnRetiro")
+                            WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                        Else
+                            Trace("DocumentCompleted - Calling showBtnRetiro")
+                            WebBrowser1.Document.InvokeScript("showBtnRetiro")
+                        End If
+                    Catch ex As Exception
+                        Trace("Error invoking cassette script in DocumentCompleted: " & ex.Message)
+                    End Try
+                End If
+            End If
+        Catch ex As Exception
+            Trace("Error WebBrowser1_DocumentCompleted: " & ex.Message)
+        End Try
+    End Sub
+
 
 End Class
-
 
 

@@ -49,7 +49,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="appInterfaceNDC">
-      <HintPath>..\..\..\..\..\appMain\application\appInterfaceNDC.dll</HintPath>
+      <HintPath>C:\appMain\application\appInterfaceNDC.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Configuration" />

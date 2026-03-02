@@ -1,29 +1,16 @@
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.vbproj.AssemblyReference.cache
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.Form1.resources
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.Resources.resources
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.vbproj.GenerateResource.cache
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.vbproj.CoreCompileInputs.cache
-C:\Users\jrgon\source\repos\appScreens\appScreens\bin\Debug\appScreens.exe.config
-C:\Users\jrgon\source\repos\appScreens\appScreens\bin\Debug\appScreens.exe
-C:\Users\jrgon\source\repos\appScreens\appScreens\bin\Debug\appScreens.pdb
-C:\Users\jrgon\source\repos\appScreens\appScreens\bin\Debug\appScreens.xml
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.exe
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.xml
-C:\Users\jrgon\source\repos\appScreens\appScreens\obj\Debug\appScreens.pdb
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\appScreens.exe.config
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\appScreens.exe
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\appScreens.pdb
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\appScreens.xml
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.vbproj.AssemblyReference.cache
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.exe.config
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.Form1.resources
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.Resources.resources
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.vbproj.GenerateResource.cache
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.vbproj.CoreCompileInputs.cache
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.exe
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.xml
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.pdb
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\appInterfaceNDC.dll
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\obj\Debug\appScreens.vbproj.Up2Date
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\System.Configuration.ConfigurationManager.dll
-C:\Source Code\AppWhere\appBancoppel\appScreens\appScreens\bin\Debug\System.Configuration.ConfigurationManager.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\appScreens.exe.config
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\appScreens.exe
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\appScreens.pdb
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\appScreens.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\appInterfaceNDC.dll
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\System.Configuration.ConfigurationManager.dll
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\Debug\System.Configuration.ConfigurationManager.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.vbproj.AssemblyReference.cache
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.Form1.resources
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.Resources.resources
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.vbproj.GenerateResource.cache
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.vbproj.CoreCompileInputs.cache
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.vbproj.Up2Date
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.exe
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.pdb
