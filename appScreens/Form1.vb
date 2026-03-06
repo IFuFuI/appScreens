@@ -53,6 +53,14 @@ Public Class Form1
     Dim ndcN As String
     ' sComision: Código de operación cadena NDC comision
     Dim sComision As String
+    ' bNDCPageActive: Indica que el NDC está mostrando una pantalla, ignorar 701
+    Dim bNDCPageActive As Boolean = False
+    ' sExp852OriginalUrl: URL original (menu) cuando se redirige a exp-852
+    Dim sExp852OriginalUrl As String = ""
+    ' sExp850OriginalUrl: URL original (menu) cuando se redirige a exp-850 por error de impresora
+    Dim sExp850OriginalUrl As String = ""
+    ' sLastMenuUrl: Último menú principal mostrado (puede ser menu.html, menuWO-504.html, etc.)
+    Dim sLastMenuUrl As String = ""
 
     Private Sub frmsstWait_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         Dim sheight As Integer = 768
@@ -139,15 +147,11 @@ Public Class Form1
             If sValue <> sCurrent Then
                 Trace("[Timer1_Tick] [Info] Screen: " + sValue)
 
-
-                'If sValue <> "701" Then
-                '    ProcesarPantalla(sValue)
-                'Else
-                '    Trace("701 No procesa nada")
-                'End If
-
-                ProcesarPantalla(sValue)
-
+                If sValue = "701" AndAlso bNDCPageActive Then
+                    Trace("701 ignorado - pantalla NDC activa")
+                Else
+                    ProcesarPantalla(sValue)
+                End If
 
             End If
 
@@ -162,8 +166,11 @@ Public Class Form1
                 If sData <> sCurrentData Then
                     sCurrentData = sData
                     If sCurrentData = "KEYPIN" Then sCurrentData = ""
+                    ' Resetear también para dígitos y teclas especiales para permitir repetidos
+                    If "0123456789*#".Contains(sCurrentData) Then sCurrentData = ""
 
                     Trace("DATA 2: " + sData)
+                    Trace("DATA 2 currentScreen: " + currentScreen)
 
                     Select Case sData
                         Case "KEYPIN"
@@ -174,6 +181,8 @@ Public Class Form1
                                 'Trace("Invoca metodo")
                                 WebBrowser1.Document.InvokeScript("recibeData")
                             End If
+                        Case Else
+                            Trace("DATA desconocido: " + sData + " screen: " + currentScreen)
                     End Select
                 End If
 
@@ -257,11 +266,36 @@ Public Class Form1
         End Try
     End Function
 
+    Private Function IsPrinterError() As Boolean
+        Try
+            Dim status As String = ReadIni("PTR STATUS", "fwDevice", ConfigManager.workFileDevices).Trim()
+            Return status.ToUpper() = "HWERROR"
+        Catch ex As Exception
+            Trace("Error IsPrinterError: " & ex.Message)
+            Return False
+        End Try
+    End Function
+
     ''' <summary>
     ''' Evento a la pagina NDC.
     ''' </summary>
     ''' <param name="sPotition">posicion de la FDK</param>
     Public Sub clickPage(sPotition As String)
+
+        ' Si estamos en exp-852 (sin efectivo), el Continuar regresa al menú sin mandar FDK al host
+        If sExp852OriginalUrl <> "" Then
+            Trace("exp-852 Continuar - navegando a menu: " & sExp852OriginalUrl)
+            Dim sMenuUrl As String = sExp852OriginalUrl
+            sExp852OriginalUrl = ""
+            bNDCPageActive = False
+            Me.Show()
+            WebBrowser1.Navigate(sMenuUrl)
+            Exit Sub
+        End If
+
+        ' exp-850 (error impresora): NO interceptamos aquí.
+        ' Dejamos que el FDK llegue a APTRA normalmente (para que APTRA actualice su estado)
+        ' La navegación al menú la hace pageException (FDKEXP=8 en config de screen 850)
 
         Try
             'If pageException <> "" Then
@@ -277,7 +311,6 @@ Public Class Form1
         Me.Hide()
 
         Threading.Thread.Sleep(300)
-
 
         Select Case sPotition
             Case "1"
@@ -308,6 +341,8 @@ Public Class Form1
 
         If pageException <> "" And pageException = sPotition Then
             pageException = ""
+            sExp850OriginalUrl = ""
+            bNDCPageActive = False
             Trace("Ejectua excepción FDK.. navega a currentScreen: " + currentScreen)
             WebBrowser1.Navigate(currentScreen)
             Me.Show()
@@ -512,20 +547,25 @@ Public Class Form1
 
             Trace("Msg NDC: " & contenido)
 
-            If contenido.Contains("CODIGO RESPUESTA") Then
+            ' Verificar si hay errores reales (no 000 que es éxito)
+            Dim esError As Boolean = False
+
+            If contenido.Contains("CODIGO RESPUESTA") AndAlso Not contenido.Contains("CODIGO RESPUESTA 000") Then
                 Trace("Encontro un error regresado por Host, no muestra gracias: ")
-                isExpetionClosePageNDC = True
-                Me.Hide()
+                esError = True
             End If
 
-            If contenido.Contains("TIPO DE TRANSACCION") Then
+            If contenido.Contains("TIPO DE TRANSACCION") AndAlso Not contenido.Contains("CODIGO RESPUESTA 000") Then
                 Trace("Encontro un error regresado por Host TIPO DE TRANSACCION, no muestra gracias: ")
-                isExpetionClosePageNDC = True
-                Me.Hide()
+                esError = True
             End If
 
             If contenido.Contains("CODIGO DE ERRORR") Then
                 Trace("Encontro un error CODIGO DE ERRORR regresado por Host, no muestra gracias: ")
+                esError = True
+            End If
+
+            If esError Then
                 isExpetionClosePageNDC = True
                 Me.Hide()
             End If
@@ -610,6 +650,38 @@ Public Class Form1
             tmOut.Enabled = True
             lastUrl = currentScreen
             currentScreen = sUrl
+            bNDCPageActive = True
+
+            ' Si va a mostrar el menú (cualquier variante) y no hay efectivo, redirigir a pantalla sin efectivo
+            Dim sUrlLower As String = sUrl.ToLower()
+            Dim esPaginaMenu As Boolean = sUrlLower.Contains("menu") AndAlso Not sUrlLower.Contains("menumore")
+            If esPaginaMenu Then
+                sLastMenuUrl = sUrl
+                If AreAnyCassettesEmpty() Then
+                    Trace("Sin efectivo - redirigiendo a exp-852")
+                    sExp852OriginalUrl = sUrl
+                    sExp850OriginalUrl = ""
+                    Dim sUrlBase As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
+                    sUrl = sUrlBase & "exp-852.html"
+                ElseIf IsPrinterError() Then
+                    Trace("Error impresora - redirigiendo a exp-850")
+                    sExp850OriginalUrl = sUrl
+                    ' currentScreen = menú correcto, para que pageException (FDK8) navegue ahí
+                    currentScreen = sUrl
+                    ' Setear pageException directamente (por si el timer 850 llegó antes y ya fue ignorado)
+                    pageException = "8"
+                    ' Limpiar flag de excepción NDC para que 701 no oculte el menú después
+                    isExpetionClosePageNDC = False
+                    Dim sUrlBase850 As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
+                    sUrl = sUrlBase850 & "exp-850.html"
+                Else
+                    sExp852OriginalUrl = ""
+                    sExp850OriginalUrl = ""
+                End If
+            Else
+                sExp852OriginalUrl = ""
+                sExp850OriginalUrl = ""
+            End If
 
             Trace("Navega page Url DatosNDC: " + sUrl)
             WebBrowser1.Navigate(sUrl)
@@ -639,16 +711,34 @@ Public Class Form1
         Dim sImagen As String = String.Empty
         Dim sDataEnable As String = String.Empty
         Dim sIdioma As String
+
+        ' IMPORTANTE: este check va ANTES de pageException = "" para no borrar el valor seteado por DatosNDC
+        If sValue = "850" AndAlso sExp850OriginalUrl <> "" Then
+            Trace("850 ignorado - exp-850 ya activo proactivamente")
+            isExpetionClosePageNDC = False
+            Exit Sub
+        End If
+
         pageException = ""
 
         If sValue = "welcome" Then
             sValue = "500"
+            bNDCPageActive = False
 
             If Me.Visible Then
                 'Exit Sub
             Else
                 Me.Visible = True
             End If
+        End If
+
+        If sValue = "513" OrElse sValue = "500" Then
+            bNDCPageActive = False
+            sExp850OriginalUrl = ""
+            sExp852OriginalUrl = ""
+            ' Resetear cache de estados para que welcome vuelva a invocar showErr/hideErr correctamente
+            sErrorImpresora = ""
+            sErrorCdm = ""
         End If
 
         If isExpetionClosePageNDC Then
@@ -727,8 +817,16 @@ Public Class Form1
 
                 End If
 
-                Trace("Navega page Url: " + sUrl)
-                WebBrowser1.Navigate(sUrl)
+                ' Si el 701 resuelve a menu.html pero tenemos un menú específico guardado, usarlo
+                Dim sUrlFinal As String = sUrl
+                If sValue = "701" AndAlso sLastMenuUrl <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
+                    sUrlFinal = sLastMenuUrl
+                    Trace("701 redirigido a menú correcto: " & sUrlFinal)
+                End If
+
+                Trace("Navega page Url: " + sUrlFinal)
+                bNDCPageActive = False
+                WebBrowser1.Navigate(sUrlFinal)
                 Me.Show()
             Else
 
@@ -823,14 +921,23 @@ Public Class Form1
             If sEstatusPtr <> sErrorImpresora Then
                 sErrorImpresora = sEstatusPtr
                 Trace("Cambio Estatus Impresora: " + sEstatusPtr)
-                If sErrorImpresora = "HWERROR" Then
-                    WebBrowser1.Document.InvokeScript("showErrPrinter")
-                Else
-                    If sErrorImpresora = "ONLINE" Then
+
+                ' Solo invocar showErrPrinter/hideErrPrinter en welcome y menuMore
+                ' En otras páginas (menú principal, transacciones) el invoke rompe el flujo
+                Dim sUrlActual As String = currentScreen.ToLower()
+                Dim esWelcome As Boolean = sUrlActual.Contains("welcome") OrElse sUrlActual = ""
+                Dim esMenuMore As Boolean = sUrlActual.Contains("menumore")
+
+                If esWelcome OrElse esMenuMore Then
+                    If sErrorImpresora = "HWERROR" Then
+                        WebBrowser1.Document.InvokeScript("showErrPrinter")
+                    Else
+                        WebBrowser1.Document.InvokeScript("hideErrPrinter")
                     End If
-                    WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                    Trace("Invoke Welcome ptr")
+                Else
+                    Trace("Cambio impresora detectado pero no en welcome - no invoke (" & currentScreen & ")")
                 End If
-                Trace("Invoke Welcome ptr")
             End If
         Catch ex As Exception
             Trace("Error al hacer el invoke Welcome: " + ex.Message)
@@ -935,6 +1042,21 @@ Public Class Form1
                     Catch ex As Exception
                         Trace("Error invoking cassette script in DocumentCompleted: " & ex.Message)
                     End Try
+
+                    ' Si es menuMore y hay error de impresora, invocar showErrPrinter al cargar
+                    If e.Url.ToString().ToLower().Contains("menumore") Then
+                        Try
+                            sErrorImpresora = "" ' resetear cache para que checkEstusImpresora vuelva a disparar
+                            If IsPrinterError() Then
+                                Trace("DocumentCompleted menuMore - showErrPrinter")
+                                WebBrowser1.Document.InvokeScript("showErrPrinter")
+                            Else
+                                WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                            End If
+                        Catch ex As Exception
+                            Trace("Error invoking printer script in DocumentCompleted menuMore: " & ex.Message)
+                        End Try
+                    End If
                 End If
             End If
         Catch ex As Exception
