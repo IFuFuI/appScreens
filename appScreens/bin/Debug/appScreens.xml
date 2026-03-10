@@ -75,5 +75,15 @@ appScreens
  Regresa a la pantalla anterior.
  </summary>
 </member>
+<member name="M:appScreens.Form1.ApplyTransparentRegion">
+ <summary>
+ Aplica una región transparente a la ventana para crear un "hueco" donde se vea el texto de APTRA debajo
+ </summary>
+</member>
+<member name="M:appScreens.Form1.RestoreFullRegion">
+ <summary>
+ Restaura la región completa de la ventana (sin huecos transparentes)
+ </summary>
+</member>
 </members>
 </doc>

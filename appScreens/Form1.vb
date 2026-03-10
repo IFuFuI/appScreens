@@ -62,6 +62,15 @@ Public Class Form1
     ' sLastMenuUrl: Último menú principal mostrado (puede ser menu.html, menuWO-504.html, etc.)
     Dim sLastMenuUrl As String = ""
 
+    ' ============== Win32 API para región transparente ==============
+    Private Declare Function CreateRectRgn Lib "gdi32" (ByVal X1 As Integer, ByVal Y1 As Integer, ByVal X2 As Integer, ByVal Y2 As Integer) As IntPtr
+    Private Declare Function CombineRgn Lib "gdi32" (ByVal hDestRgn As IntPtr, ByVal hSrcRgn1 As IntPtr, ByVal hSrcRgn2 As IntPtr, ByVal nCombineMode As Integer) As Integer
+    Private Declare Function SetWindowRgn Lib "user32" (ByVal hWnd As IntPtr, ByVal hRgn As IntPtr, ByVal bRedraw As Boolean) As Integer
+    Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As IntPtr) As Boolean
+    Private Const RGN_DIFF As Integer = 4
+    Private transparentRegionApplied As Boolean = False
+    ' ================================================================
+
     Private Sub frmsstWait_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         Dim sheight As Integer = 768
         Dim swidgth As Integer = 1024
@@ -1043,6 +1052,14 @@ Public Class Form1
                         Trace("Error invoking cassette script in DocumentCompleted: " & ex.Message)
                     End Try
 
+                    ' Aplicar región transparente para pantalla 554
+                    If e.Url.ToString().ToLower().Contains("transferenciaentrecuentas-554") OrElse e.Url.ToString().ToLower().Contains("-554.") Then
+                        ApplyTransparentRegion()
+                    Else
+                        ' Restaurar región completa en otras pantallas
+                        RestoreFullRegion()
+                    End If
+
                     ' Si es menuMore y hay error de impresora, invocar showErrPrinter al cargar
                     If e.Url.ToString().ToLower().Contains("menumore") Then
                         Try
@@ -1061,6 +1078,70 @@ Public Class Form1
             End If
         Catch ex As Exception
             Trace("Error WebBrowser1_DocumentCompleted: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Aplica una región transparente a la ventana para crear un "hueco" donde se vea el texto de APTRA debajo
+    ''' </summary>
+    Private Sub ApplyTransparentRegion()
+        Try
+            If transparentRegionApplied Then
+                Return ' Ya aplicada, no aplicar de nuevo
+            End If
+
+            ' Coordenadas del Label Interactive5 de APTRA: X=320, Y=432, Size=125
+            ' Crear franja horizontal completa para ver todo el texto del monto
+            Dim holeX As Integer = 0  ' Empezar desde el borde izquierdo
+            Dim holeY As Integer = 430  ' Altura donde está el texto (más abajo)
+            Dim holeWidth As Integer = Me.Width  ' Todo el ancho de la pantalla
+            Dim holeHeight As Integer = 60  ' Alto reducido para solo ver la línea del monto
+
+            ' Crear región completa del form
+            Dim fullRegion As IntPtr = CreateRectRgn(0, 0, Me.Width, Me.Height)
+
+            ' Crear región del hueco transparente
+            Dim holeRegion As IntPtr = CreateRectRgn(holeX, holeY, holeX + holeWidth, holeY + holeHeight)
+
+            ' Combinar: fullRegion - holeRegion = región con hueco
+            Dim combinedRegion As IntPtr = CreateRectRgn(0, 0, Me.Width, Me.Height)
+            CombineRgn(combinedRegion, fullRegion, holeRegion, RGN_DIFF)
+
+            ' Aplicar la región a la ventana
+            SetWindowRgn(Me.Handle, combinedRegion, True)
+
+            ' Limpiar recursos (no borrar combinedRegion porque Windows la usa)
+            DeleteObject(fullRegion)
+            DeleteObject(holeRegion)
+
+            transparentRegionApplied = True
+            Trace("[Transparent Region] Aplicada para pantalla 554 - Hueco en X=" & holeX & " Y=" & holeY & " W=" & holeWidth & " H=" & holeHeight)
+
+        Catch ex As Exception
+            Trace("[Transparent Region] Error aplicando región: " & ex.Message)
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Restaura la región completa de la ventana (sin huecos transparentes)
+    ''' </summary>
+    Private Sub RestoreFullRegion()
+        Try
+            If Not transparentRegionApplied Then
+                Return ' No hay región aplicada, no hacer nada
+            End If
+
+            ' Crear región completa del form (sin huecos)
+            Dim fullRegion As IntPtr = CreateRectRgn(0, 0, Me.Width, Me.Height)
+
+            ' Aplicar la región completa a la ventana
+            SetWindowRgn(Me.Handle, fullRegion, True)
+
+            transparentRegionApplied = False
+            Trace("[Transparent Region] Restaurada región completa")
+
+        Catch ex As Exception
+            Trace("[Transparent Region] Error restaurando región: " & ex.Message)
         End Try
     End Sub
 
