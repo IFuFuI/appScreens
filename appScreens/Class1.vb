@@ -11,7 +11,6 @@ Public Class ClickEnVentana
     <DllImport("user32.dll")>
     Private Shared Function GetWindowRect(hWnd As IntPtr, ByRef lpRect As RECT) As Boolean
     End Function
-
     ' Mover cursor
     <DllImport("user32.dll")>
     Private Shared Function SetCursorPos(x As Integer, y As Integer) As Boolean
@@ -29,7 +28,7 @@ Public Class ClickEnVentana
     ' Estructura RECT
     Private Structure RECT
         Public Left As Integer
-        Public Top As Integer
+        Public Top As Integer 
         Public Right As Integer
         Public Bottom As Integer
     End Structure
@@ -60,9 +59,6 @@ Public Class ClickEnVentana
         Else
             'Trace("No se pudo obtener el rectángulo de la ventana.")
         End If
-
-
-
 
     End Sub
 

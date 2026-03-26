@@ -146,12 +146,23 @@ Public Class Form1
             If sValue <> sCurrent Then
                 Trace("[Timer1_Tick] [Info] Screen: " + sValue)
 
+                Dim allowScreen As Boolean = True
+
                 If sValue = "701" AndAlso bNDCPageActive Then
-                    Trace("701 ignorado - pantalla NDC activa")
-                Else
-                    ProcesarPantalla(sValue)
+                    Trace("701 recibido con NDC activo, currentScreen=" & currentScreen)
+
+                    If currentScreen.ToLower().Contains("menu") Then
+                        Trace("701 con menu activo, forzando bNDCPageActive=False y procesando")
+                        bNDCPageActive = False
+                    Else
+                        Trace("701 ignorado - pantalla NDC activa y no es menu")
+                        allowScreen = False
+                    End If
                 End If
 
+                If allowScreen Then
+                    ProcesarPantalla(sValue)
+                End If
             End If
 
             writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
@@ -205,7 +216,8 @@ Public Class Form1
             Task.Run(Sub()
                          Try
                              Dim anyZero As Boolean = AreAnyCassettesEmpty()
-                             Trace("AreAnyCassettesEmpty returned: " & anyZero)
+                             Dim isPrinterErr As Boolean = IsPrinterError()
+                             Trace("wb_RevisaEstadusDevices - anyZero=" & anyZero & " printerErr=" & isPrinterErr)
                              If Me IsNot Nothing AndAlso Not Me.IsDisposed Then
                                  Me.BeginInvoke(Sub()
                                                     Try
@@ -214,12 +226,32 @@ Public Class Form1
                                                             Return
                                                         End If
 
-                                                        If anyZero Then
+                                                        If isPrinterErr Then
+                                                            WebBrowser1.Document.InvokeScript("showErrPrinter")
+                                                            WebBrowser1.Document.InvokeScript("hideErrNoCash")
+                                                            WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                                                        Else
+                                                            WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                                                        End If
+
+                                                        If isHostError Then
+                                                            WebBrowser1.Document.InvokeScript("showErrHost")
+                                                            WebBrowser1.Document.InvokeScript("showErrNoCash")
+                                                            WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                                                        Else
+                                                            WebBrowser1.Document.InvokeScript("hideErrHost")
+                                                        End If
+
+                                                        If anyZero OrElse isHostError OrElse isPrinterErr Then
                                                             Trace("Calling hideBtnRetiro from wb_RevisaEstadusDevices")
                                                             WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                                                            If Not isPrinterErr Then
+                                                                WebBrowser1.Document.InvokeScript("showErrNoCash")
+                                                            End If
                                                         Else
                                                             Trace("Calling showBtnRetiro from wb_RevisaEstadusDevices")
                                                             WebBrowser1.Document.InvokeScript("showBtnRetiro")
+                                                            WebBrowser1.Document.InvokeScript("hideErrNoCash")
                                                         End If
                                                     Catch ex As Exception
                                                         Trace("Error invoking cassette script: " & ex.Message)
@@ -488,7 +520,10 @@ Public Class Form1
             If esError Then
                 isExpetionClosePageNDC = True
                 isHostError = True
-                Trace("procesaDatosNDC: host error detectado => isHostError=True")
+                sExp852OriginalUrl = currentScreen
+                sExp850OriginalUrl = ""
+                pageException = "8"
+                Trace("procesaDatosNDC: host error detectado => isHostError=True, sExp852OriginalUrl=" & sExp852OriginalUrl)
                 If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
                     Try
                         WebBrowser1.Document.InvokeScript("hideBtnRetiro")
@@ -673,7 +708,8 @@ Public Class Form1
             sErrorImpresora = ""
             sErrorCdm = ""
             isHostError = False
-            Trace("ProcesarPantalla: clear isHostError (pantalla 513/500)")
+            isExpetionClosePageNDC = False
+            Trace("ProcesarPantalla: clear isHostError y exception NDC (pantalla 513/500)")
             If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
                 Try
                     WebBrowser1.Document.InvokeScript("showBtnRetiro")
@@ -689,10 +725,15 @@ Public Class Form1
         End If
 
         If isExpetionClosePageNDC Then
-            Trace("Es Close por excepcion NDC oculata pantalla")
-            isExpetionClosePageNDC = False
-            Me.Hide()
-            Exit Sub
+            If sValue = "701" Then
+                Trace("701 en estado de excepción NDC: reanuda el flujo sin ocultar pantalla")
+                isExpetionClosePageNDC = False
+            Else
+                Trace("Es Close por excepcion NDC oculata pantalla")
+                isExpetionClosePageNDC = False
+                Me.Hide()
+                Exit Sub
+            End If
         End If
 
         If sValue = "513" And isClosePage Then
@@ -705,10 +746,12 @@ Public Class Form1
             sUrl = ReadIni(sValue, "PAGE", ConfigManager.ScreensFile)
 
             Try
-                Dim sWB As String = WebBrowser1.Url.ToString.Replace("file:///", "")
-                If Me.Visible Then
-                    If sUrl = sWB Then
-                        Exit Sub
+                If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing Then
+                    Dim sWB As String = WebBrowser1.Url.ToString.Replace("file:///", "")
+                    If Me.Visible Then
+                        If sUrl = sWB Then
+                            Exit Sub
+                        End If
                     End If
                 End If
             Catch ex As Exception
@@ -856,12 +899,17 @@ Public Class Form1
                 If esWelcome OrElse esMenuMore Then
                     If sErrorImpresora = "HWERROR" Then
                         WebBrowser1.Document.InvokeScript("showErrPrinter")
+                        WebBrowser1.Document.InvokeScript("hideErrNoCash")
+                        WebBrowser1.Document.InvokeScript("hideBtnRetiro")
                     Else
                         WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                        If Not IsCdmError() AndAlso Not isHostError Then
+                            WebBrowser1.Document.InvokeScript("showBtnRetiro")
+                        End If
                     End If
                     Trace("Invoke Welcome ptr")
                 Else
-                    Trace("Cambio impresora detectado pero no en welcome - no invoke (" & currentScreen & ")")
+                    Trace("Cambio impresora detectado pero no en welcome/menuMore - no invoke (" & currentScreen & ")")
                 End If
             End If
         Catch ex As Exception
@@ -885,11 +933,13 @@ Public Class Form1
                     WebBrowser1.Document.InvokeScript("hideErrNoCash")
                 End If
 
-                ' En caso de host error o dispensador error forzamos ocultar retiro
+                ' En caso de host error forzamos ocultar retiro
                 If isHostError Then
                     Trace("checkEstusCdm: host error activo, ocultando btn retiro")
-                    WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                    WebBrowser1.Document.InvokeScript("showErrHost")
                     WebBrowser1.Document.InvokeScript("showErrNoCash")
+                Else
+                    WebBrowser1.Document.InvokeScript("hideErrHost")
                 End If
 
                 Trace("Invoke Welcome cmd")
@@ -926,13 +976,18 @@ Public Class Form1
             End If
 
             If cass1 = "0" OrElse cass2 = "0" OrElse cass3 = "0" OrElse cass4 = "0" OrElse IsCdmError() OrElse isHostError Then
-                Trace("Invocando hideBtnRetiro + showErrNoCash (cassettes en 0 o error fisico en dispensador o error host)")
+                Trace("Invocando hideBtnRetiro + showErrNoCash (cassettes en 0, error dispensador/host)")
                 WebBrowser1.Document.InvokeScript("hideBtnRetiro")
                 WebBrowser1.Document.InvokeScript("showErrNoCash")
+            ElseIf IsPrinterError() Then
+                Trace("Invocando hideBtnRetiro + showErrPrinter (error impresora)")
+                WebBrowser1.Document.InvokeScript("hideBtnRetiro")
+                WebBrowser1.Document.InvokeScript("showErrPrinter")
             Else
-                Trace("Invocando showBtnRetiro + hideErrNoCash (cassettes con dinero)")
+                Trace("Invocando showBtnRetiro + hideErrNoCash/hideErrPrinter (cassettes con dinero)")
                 WebBrowser1.Document.InvokeScript("showBtnRetiro")
                 WebBrowser1.Document.InvokeScript("hideErrNoCash")
+                WebBrowser1.Document.InvokeScript("hideErrPrinter")
             End If
         Catch ex As Exception
             Trace("Error en checkEstusCassettes: " & ex.Message)
@@ -974,8 +1029,20 @@ Public Class Form1
                         Dim anyZero As Boolean = AreAnyCassettesEmpty()
                         Trace("DocumentCompleted - AreAnyCassettesEmpty: " & anyZero)
 
-                        If anyZero OrElse isHostError OrElse IsCdmError() Then
-                            Trace("DocumentCompleted - Calling hideBtnRetiro (cassettes/host/cdm error)")
+                        If IsCdmError() Then
+                            WebBrowser1.Document.InvokeScript("showErrCdm")
+                        Else
+                            WebBrowser1.Document.InvokeScript("hideErrCdm")
+                        End If
+
+                        If IsPrinterError() Then
+                            WebBrowser1.Document.InvokeScript("showErrPrinter")
+                        Else
+                            WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                        End If
+
+                        If anyZero OrElse isHostError OrElse IsCdmError() OrElse IsPrinterError() Then
+                            Trace("DocumentCompleted - Calling hideBtnRetiro (cassettes/host/cdm/printer error)")
                             WebBrowser1.Document.InvokeScript("hideBtnRetiro")
                         Else
                             Trace("DocumentCompleted - Calling showBtnRetiro")
