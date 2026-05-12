@@ -9,3 +9,6 @@
 /.vs
 /appScreens/.vs
 appScreens/appScreens.vbproj
+appScreens/bin/Debug/appScreens.exe
+*.pdb
+*.exe
