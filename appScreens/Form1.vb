@@ -243,7 +243,10 @@ Public Class Form1
                             Trace("sCurrent: " + sCurrent)
                             sDataEnable = ReadIni(sCurrent, "DATA", ConfigManager.ScreensFile)
                             Trace("sDataEnable: " + sDataEnable)
-                            If sDataEnable = "PIN" Then
+                            ' Si estamos en LenguajeSelector (Screen 150), ocultar appscreens inmediatamente
+                            If sCurrent = "150" Then
+                                ocultarPantalla()
+                            ElseIf sDataEnable = "PIN" Then
                                 WebBrowser1.Document.InvokeScript("recibeData")
                             End If
                         Case Else
@@ -443,6 +446,18 @@ Public Class Form1
         Dim sretur As String = String.Empty
 
         Select Case sVar
+            ' --- INICIO MULTILENGUAJE: Retornar idioma actual a JS ---
+            Case "idioma"
+                Dim sIdioma As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
+                If sIdioma = "I" Then
+                    sretur = "EN"
+                ElseIf sIdioma = "M" Then
+                    sretur = "MY"
+                Else
+                    sretur = "ES" ' Por defecto Español
+                End If
+            ' --- FIN MULTILENGUAJE ---
+
             Case "B" : sretur = ndcB
             Case "C" : sretur = ndcC
             Case "D" : sretur = ndcD
@@ -568,7 +583,7 @@ Public Class Form1
         Dim bPantalla As Boolean = False
         Dim sImagen As String = String.Empty
         Dim sPage As String = ""
-        Dim contenido As String
+        Dim contenido As String = String.Empty
 
         For Each archivo In archivos
             Try
@@ -892,6 +907,32 @@ Public Class Form1
             sImagen = ReadIni(sPage, "PIC", ConfigManager.ScreensFile)
             If sImagen <> "" Then
                 Try
+                    ' --- INICIO MULTILENGUAJE: Hot-Swap nativo para NDC Host ---
+                    Dim sIdAct As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
+                    Dim langFolder As String = "ES" ' Por defecto español
+                    If sIdAct = "I" Then langFolder = "EN"
+                    If sIdAct = "M" Then langFolder = "MY"
+
+                    ' >>> RUTA IMPORTANTE <<< Ajusta esta ruta a tu carpeta Media real
+                    Dim rutaBase As String = "C:\appMain\html\Media\"
+                    Dim nombreBase As String = "Pic" & sImagen.PadLeft(3, "0"c)
+
+                    ' Copia la imagen sin importar la extensión
+                    Dim extensiones() As String = {".png", ".gif", ".jpg"}
+                    For Each ext In extensiones
+                        Dim archivoOrigen As String = rutaBase & langFolder & "\" & nombreBase & ext
+                        Dim archivoDestino As String = rutaBase & nombreBase & ext
+
+                        Try
+                            If File.Exists(archivoOrigen) Then
+                                File.Copy(archivoOrigen, archivoDestino, True)
+                            End If
+                        Catch exCopy As Exception
+                            Trace("Error copiando " & ext & ": " & exCopy.Message)
+                        End Try
+                    Next
+                    ' --- FIN MULTILENGUAJE ---
+
                     dllInterfaceNdc.showScreenNDC(CInt(sImagen))
                     Trace("Muestra Pantalla PIC")
                     ocultarPantalla()
@@ -916,7 +957,7 @@ Public Class Form1
         Dim sUrl As String = String.Empty
         Dim sImagen As String = String.Empty
         Dim sDataEnable As String = String.Empty
-        Dim sIdioma As String
+        ' Dim sIdioma As String -> Ya no lo necesitamos como variable local directa, se maneja abajo.
 
         If sValue = "850" AndAlso sExp850OriginalUrl <> "" Then
             Trace("850 ignorado - exp-850 ya activo proactivamente. Marcando IsOnExceptionScreen=True")
@@ -960,6 +1001,15 @@ Public Class Form1
 
         pageException = ""
 
+        ' >>> HACK TEMPORAL PARA PRUEBAS DESDE EL INI (SE EJECUTA SIEMPRE) <<<
+        ' Verificar si el usuario cambió el idioma manualmente en el INI
+        Dim testLangFromIni As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
+        If testLangFromIni = "I" OrElse testLangFromIni = "M" Then
+            ' Si el INI tiene una letra distinta a vacío, disparamos el reemplazo masivo
+            GuardarIdiomaSeleccionado(testLangFromIni)
+        End If
+        ' >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
         ' >>> BARRERA PROTECTORA DE PANTALLA CUSTOM <<<
         If sValue = "welcome" OrElse sValue = "500" OrElse sValue = "701" OrElse sValue = "hide" Then
             keepCustomErrorPageActive = False
@@ -973,6 +1023,52 @@ Public Class Form1
         If sValue = "welcome" Then
             sValue = "500"
             bNDCPageActive = False
+
+            ' --- INICIO MULTILENGUAJE: Limpiar idioma al regresar a la pantalla de inicio ---
+            writeINI("LG", "RESULT", "", ConfigManager.WorkFile)
+
+            ' Restaurar TODAS las imágenes al idioma por defecto (ES) masivamente
+            Dim rutaBase As String = "C:\appMain\html\Media\"
+            Dim rutaOrigenES As String = Path.Combine(rutaBase, "ES")
+
+            Try
+                If Directory.Exists(rutaOrigenES) Then
+                    Dim archivosES As String() = Directory.GetFiles(rutaOrigenES, "Pic*.*")
+                    For Each archivo In archivosES
+                        Dim nombreArchivo As String = Path.GetFileName(archivo)
+                        Dim archivoDestino As String = Path.Combine(rutaBase, nombreArchivo)
+                        Try
+                            File.Copy(archivo, archivoDestino, True)
+                        Catch ex As Exception
+                            Trace("Error restaurando imagen ES: " & nombreArchivo & " - " & ex.Message)
+                        End Try
+                    Next
+                    Trace("Imágenes restauradas masivamente a Español (ES) en el reset de sesión.")
+                End If
+            Catch ex As Exception
+                Trace("Error global restaurando imágenes ES: " & ex.Message)
+            End Try
+
+            ' Restaurar imágenes globales desde carpeta GLOBAL (Pic501, etc)
+            Dim rutaGlobal As String = Path.Combine(rutaBase, "GLOBAL")
+            Try
+                If Directory.Exists(rutaGlobal) Then
+                    Dim archivosGlobal As String() = Directory.GetFiles(rutaGlobal, "Pic*.*")
+                    For Each archivo In archivosGlobal
+                        Dim nombreArchivo As String = Path.GetFileName(archivo)
+                        Dim archivoDestino As String = Path.Combine(rutaBase, nombreArchivo)
+                        Try
+                            File.Copy(archivo, archivoDestino, True)
+                        Catch ex As Exception
+                            Trace("Error restaurando imagen GLOBAL: " & nombreArchivo & " - " & ex.Message)
+                        End Try
+                    Next
+                    Trace("Imágenes globales restauradas en el reset de sesión.")
+                End If
+            Catch ex As Exception
+                Trace("Error global restaurando imágenes GLOBAL: " & ex.Message)
+            End Try
+            ' --- FIN MULTILENGUAJE ---
 
             If Not Me.Visible Then
                 Me.Visible = True
@@ -1080,18 +1176,20 @@ Public Class Form1
 
             If sUrl <> "" Then
                 sCurrent = sValue
-                sIdioma = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
                 sDataEnable = ReadIni(sValue, "DATA", ConfigManager.ScreensFile)
 
-                If sIdioma <> "" Then
-                    Dim iPoint As Integer
-                    Dim sTU As String = ""
-                    iPoint = sUrl.IndexOf(".")
-                    If iPoint > 0 Then
-                        sTU = Mid(sUrl, 1, iPoint)
-                        sUrl = sTU + "_" + sIdioma + ".html"
-                    End If
-                End If
+                ' --- INICIO MULTILENGUAJE: Comentamos la carga de páginas con sufijos _I y _M para que siempre cargue el HTML limpio ---
+                ' sIdioma = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
+                ' If sIdioma <> "" Then
+                '     Dim iPoint As Integer
+                '     Dim sTU As String = ""
+                '     iPoint = sUrl.IndexOf(".")
+                '     If iPoint > 0 Then
+                '         sTU = Mid(sUrl, 1, iPoint)
+                '         sUrl = sTU + "_" + sIdioma + ".html"
+                '     End If
+                ' End If
+                ' --- FIN MULTILENGUAJE ---
 
                 ClickEnVentana.MoverMouse00()
                 sCurrentData = ""
@@ -1121,6 +1219,8 @@ Public Class Form1
 
                 If sImagen <> "" Then
                     Try
+                        ' La copia masiva (Hot-Swap) ya se realiza en GuardarIdiomaSeleccionado() 
+                        ' o al momento del reset de sesión (welcome).
                         dllInterfaceNdc.showScreenNDC(CInt(sImagen))
                     Catch ex As Exception
                         Trace("Error al mandar interface en PIC")
@@ -1155,7 +1255,7 @@ Public Class Form1
         End Try
     End Sub
 
-    Private Sub ocultarPantalla()
+    Public Sub ocultarPantalla()
         Trace("Oculta Pantalla")
         tmMsgDevices.Enabled = False
         Me.Hide()
@@ -1368,6 +1468,27 @@ Public Class Form1
                         Dim anyZero As Boolean = AreAnyCassettesEmpty()
                         Trace("DocumentCompleted - AreAnyCassettesEmpty: " & anyZero)
 
+                        ' Inyectar idioma a JavaScript
+                        Try
+                            Dim sIdiomaIni As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
+
+                            Dim sIdiomaJS As String = "ES"
+                            If sIdiomaIni = "I" Then
+                                sIdiomaJS = "EN"
+                            ElseIf sIdiomaIni = "M" Then
+                                sIdiomaJS = "MY"
+                            End If
+
+                            ' Inyectar script usando InvokeScript
+                            If WebBrowser1.Document IsNot Nothing Then
+                                Try
+                                    WebBrowser1.Document.InvokeScript("definirIdioma", New Object() {sIdiomaJS})
+                                Catch ex2 As Exception
+                                End Try
+                            End If
+                        Catch ex As Exception
+                        End Try
+
                         If IsCdmError() Then
                             WebBrowser1.Document.InvokeScript("showErrCdm")
                         Else
@@ -1548,5 +1669,39 @@ Public Class Form1
             Trace("Error en regresarFastCash: " & ex.Message)
         End Try
     End Sub
+
+    ' --- INICIO MULTILENGUAJE: Función para que el HTML guarde el idioma que elige el usuario ---
+    Public Sub GuardarIdiomaSeleccionado(ByVal idioma As String)
+        Try
+            writeINI("LG", "RESULT", idioma, ConfigManager.WorkFile)
+            Trace("Idioma cambiado por el usuario a: " & idioma)
+
+            ' Reemplazar TODAS las imágenes en bloque al momento de elegir el idioma
+            Dim rutaBase As String = "C:\appMain\html\Media\"
+            Dim langFolder As String = "ES"
+            If idioma = "I" Then langFolder = "EN"
+            If idioma = "M" Then langFolder = "MY"
+
+            Dim rutaOrigen As String = Path.Combine(rutaBase, langFolder)
+
+            If Directory.Exists(rutaOrigen) Then
+                Dim archivosOrigen As String() = Directory.GetFiles(rutaOrigen, "Pic*.*")
+                For Each archivo In archivosOrigen
+                    Dim nombreArchivo As String = Path.GetFileName(archivo)
+                    Dim archivoDestino As String = Path.Combine(rutaBase, nombreArchivo)
+                    Try
+                        File.Copy(archivo, archivoDestino, True)
+                    Catch ex As Exception
+                        Trace("Error reemplazando masivamente: " & nombreArchivo & " - " & ex.Message)
+                    End Try
+                Next
+                Trace("Reemplazo masivo de recursos a idioma " & langFolder & " completado.")
+            End If
+
+        Catch ex As Exception
+            Trace("Error al guardar idioma: " & ex.Message)
+        End Try
+    End Sub
+    ' --- FIN MULTILENGUAJE ---
 
 End Class
