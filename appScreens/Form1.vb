@@ -65,6 +65,7 @@ Public Class Form1
     Dim sExp850OriginalUrl As String = ""
     ' sLastMenuUrl: Último menú principal mostrado (puede ser menu.html, menuWO-504.html, etc.)
     Dim sLastMenuUrl As String = ""
+    Dim sMenuActivo As String = ""
 
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
@@ -146,6 +147,25 @@ Public Class Form1
         Me.Hide()
     End Sub
 
+
+    Private Function EsMenuHtmlActual() As Boolean
+        Try
+            Dim cs As String = currentScreen.Trim().ToLower()
+
+            If cs = "" Then Return False
+
+            ' Estados internos de AppScreens NO son pantallas HTML reales.
+            If cs.StartsWith("pantalla_nativa_") Then Return False
+
+            ' Solo consideramos menú cuando currentScreen apunta a un HTML real de menú.
+            If Not cs.EndsWith(".html") Then Return False
+
+            Return cs.Contains("\menu") OrElse cs.Contains("/menu")
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
     Private Sub LoadHoleConfigFromIni(screenId As String)
         Try
             Dim reqTransparent As String = ReadIni(screenId, "TRANSPARENT", ConfigManager.ScreensFile).Trim().ToUpper()
@@ -202,16 +222,18 @@ Public Class Form1
                     If pageException <> "" AndAlso Not isExpetionClosePageNDC Then
                         Trace("701 ignorado - estamos mostrando una pantalla de excepcion proactiva (" & pageException & ")")
                         allowScreen = False
-                    ElseIf currentScreen.ToLower().Contains("menu") Then
-                        Trace("701 con menu activo, forzando bNDCPageActive=False y procesando")
+                    ElseIf EsMenuHtmlActual() Then
+                        Trace("701 con menu HTML activo, forzando bNDCPageActive=False y procesando")
                         bNDCPageActive = False
                     ElseIf currentScreen = "pantalla_nativa_texto" Then
-                        Trace("Primer 701 recibido despues de pantalla nativa, ignorando para mostrar texto")
-                        currentScreen = "pantalla_nativa_texto_esperando_menu"
+                        Trace("701 recibido despues de pantalla nativa texto. Se ignora para no montar menu encima de APTRA.")
+                        currentScreen = "pantalla_nativa_texto_esperando_701"
                         allowScreen = False
-                    ElseIf currentScreen = "pantalla_nativa_texto_esperando_menu" Then
-                        Trace("Segundo 701 recibido, asumiendo fin de pantalla nativa y forzando menu")
-                        bNDCPageActive = False
+
+                    ElseIf currentScreen = "pantalla_nativa_texto_esperando_701" Then
+                        Trace("701 adicional despues de pantalla nativa texto. Se ignora; APTRA sigue controlando el flujo.")
+                        allowScreen = False
+
                     Else
                         Trace("701 ignorado - pantalla NDC activa y no es menu")
                         allowScreen = False
@@ -607,11 +629,15 @@ Public Class Form1
                     If contenido.Contains("TIPO DE TRANSACCION") Then
                         Trace("Encontro un error regresado por Host TIPO DE TRANSACCION, no muestra gracias: ")
 
-                        If sLastMenuUrl <> "" Then
+                        If sMenuActivo <> "" OrElse sLastMenuUrl <> "" Then
                             Try
-                                Dim basePath As String = sLastMenuUrl.Substring(0, sLastMenuUrl.LastIndexOf("\") + 1)
-                                sLastMenuUrl = basePath & "menuWO-506-noPrint.html"
-                                Trace("Ticket impreso, actualizando sLastMenuUrl a: " & sLastMenuUrl)
+                                Dim menuBase As String = If(sMenuActivo <> "", sMenuActivo, sLastMenuUrl)
+                                Dim basePath As String = menuBase.Substring(0, menuBase.LastIndexOf("\") + 1)
+
+                                sMenuActivo = basePath & "menuWO-506-noPrint.html"
+                                sLastMenuUrl = sMenuActivo
+
+                                Trace("Ticket impreso, actualizando menu activo a: " & sMenuActivo)
                             Catch ex As Exception
                                 Trace("Error al mutar url de menú: " & ex.Message)
                             End Try
@@ -767,8 +793,22 @@ Public Class Form1
             Dim esPaginaMenu As Boolean = sUrlLower.Contains("menu") AndAlso Not sUrlLower.Contains("menumore")
             Dim esFastCash As Boolean = sUrlLower.Contains("fastcash")
 
-            ' Prevenir que el menú tape la pantalla de impresión
-            Dim esImpresionPrematura As Boolean = contenido.Contains("TIPO DE TRANSACCION") AndAlso esPaginaMenu
+            ' Prevenir que el menú tape la pantalla de impresión.
+            ' Algunos mensajes de impresión no traen "TIPO DE TRANSACCION";
+            ' por ejemplo consulta de saldo con impresión puede venir como P6610
+            ' y contener "IMPRESION CONSULTA DE SALDO" + bloque de recibo.
+            Dim esMensajeConTicket As Boolean =
+                contenido.Contains("IMPRESION") OrElse
+                contenido.Contains("FOLIO.") OrElse
+                contenido.Contains("NUM-AUTORIZACION") OrElse
+                contenido.Contains("COMISION POR USO ATM") OrElse
+                contenido.Contains("TARJETA:") OrElse
+                contenido.Contains("CTA. DE AHORRO") OrElse
+                contenido.Contains("SALDO TOT.") OrElse
+                contenido.Contains("DISPONIBLE:") OrElse
+                contenido.Contains(Chr(29) & "2")
+
+            Dim esImpresionPrematura As Boolean = esPaginaMenu AndAlso esMensajeConTicket
 
             ' Si es una impresión prematura, NO mostramos la pantalla aún
             If Not isExpetionClosePageNDC AndAlso Not esImpresionPrematura Then
@@ -797,7 +837,11 @@ Public Class Form1
             End If
 
             If esPaginaMenu Then
+                ' Guardamos el menú real que mandó el host/switch.
+                ' Este se mantiene como menú activo hasta que otro menú lo reemplace.
+                sMenuActivo = sUrl
                 sLastMenuUrl = sUrl
+                Trace("Menu activo actualizado: " & sMenuActivo)
             End If
 
             ' Agregamos la condición para que no dispare alertas si está imprimiendo
@@ -880,15 +924,37 @@ Public Class Form1
 
             ' Abortamos la navegación prematura y nos ocultamos
             If esImpresionPrematura Then
-                Trace("Impresion en curso (TIPO DE TRANSACCION). Ocultamos appScreens y esperamos al 701 para mostrar el menu.")
-                Me.Hide()
+                Trace("Impresion en curso detectada por ticket/recibo. Mostrando wait y dejando menu activo para 701: " & sUrl)
+
+                ' Aunque no naveguemos todavía al menú, este ya es el nuevo menú activo.
+                ' Ejemplo: menu661.html después de imprimir consulta de saldo.
+                sMenuActivo = sUrl
+                sLastMenuUrl = sUrl
+                Trace("Menu activo actualizado por impresion: " & sMenuActivo)
+
+                Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile)
+
+                If sWaitUrl <> "" Then
+                    currentScreen = sWaitUrl
+                    WebBrowser1.Navigate(sWaitUrl)
+                    Me.Show()
+                Else
+                    Trace("No se encontró PAGE para 300; se oculta appScreens como fallback.")
+                    Me.Hide()
+                End If
+
                 bNDCPageActive = False
             Else
                 Trace("Navega page Url DatosNDC: " + sUrl)
                 WebBrowser1.Navigate(sUrl)
             End If
 
+
         Else
+            ' No hubo PAGE para este layout/código; dejamos pasar pantalla nativa.
+            ' Limpiamos menu previo para evitar que un 701/513 posterior regrese al menu anterior.
+            sLastMenuUrl = ""
+
             sImagen = ReadIni(sPage, "PIC", ConfigManager.ScreensFile)
             If sImagen <> "" Then
                 Try
@@ -988,6 +1054,13 @@ Public Class Form1
             isExpetionClosePageNDC = False
             advertenciaMostrada = False
             aptraIsOnExceptionScreen = False
+
+            If sValue = "500" Then
+                sMenuActivo = ""
+                sLastMenuUrl = ""
+                Trace("Nueva sesion detectada")
+            End If
+
             Trace("ProcesarPantalla: clear isHostError y exception NDC (pantalla 513/500)")
             If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
                 Try
@@ -1036,7 +1109,7 @@ Public Class Form1
                    Not Me.Visible OrElse
                    currentScreen = "pantalla_nativa_pic" OrElse
                    currentScreen = "pantalla_nativa_texto" OrElse
-                   currentScreen = "pantalla_nativa_texto_esperando_menu" OrElse
+                   currentScreen = "pantalla_nativa_texto_esperando_701" OrElse
                    currentScreen = "" Then
 
                 Trace("513 interceptado: Cancelación desde menú o flujo nativo. Mantenemos oculto.")
@@ -1107,9 +1180,16 @@ Public Class Form1
                 End If
 
                 Dim sUrlFinal As String = sUrl
-                If sValue = "701" AndAlso sLastMenuUrl <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
-                    sUrlFinal = sLastMenuUrl
-                    Trace("701 redirigido a menú correcto: " & sUrlFinal)
+
+                If sValue = "701" AndAlso sMenuActivo <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
+                    sUrlFinal = sMenuActivo
+                    Trace("701 redirigido a menu activo: " & sUrlFinal)
+                End If
+
+                ' Aseguramos que currentScreen refleje la URL REAL navegada,
+                ' no el menu.html base.
+                If Not (sUrlFinal.ToLower().Contains("wait") OrElse sUrlFinal.ToLower().Contains("read")) Then
+                    currentScreen = sUrlFinal
                 End If
 
                 Trace("Navega page Url: " + sUrlFinal)
