@@ -14,3 +14,10 @@ C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.vbproj.Up
 C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.exe
 C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.xml
 C:\Users\danie\Desktop\Work\appScreens\appScreens\obj\Debug\appScreens.pdb
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appScreens.exe.config
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appScreens.exe
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appScreens.pdb
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appScreens.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appInterfaceNDC.dll
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\System.Configuration.ConfigurationManager.dll
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\System.Configuration.ConfigurationManager.xml
