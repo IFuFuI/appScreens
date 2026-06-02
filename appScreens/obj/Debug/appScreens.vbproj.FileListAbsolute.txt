@@ -21,3 +21,10 @@ C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appScreens.xm
 C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\appInterfaceNDC.dll
 C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\System.Configuration.ConfigurationManager.dll
 C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\codex-verify\System.Configuration.ConfigurationManager.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\appScreens.exe.config
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\appScreens.exe
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\appScreens.pdb
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\appScreens.xml
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\appInterfaceNDC.dll
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\System.Configuration.ConfigurationManager.dll
+C:\Users\danie\Desktop\Work\appScreens\appScreens\bin\CodexCheck\System.Configuration.ConfigurationManager.xml

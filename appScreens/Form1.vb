@@ -78,6 +78,8 @@ Public Class Form1
     Dim globalMultiploMinimoDin As String = ""
     Dim globalMontoMaximoDin As String = ""
     Dim bFaltaBilletesDesdeMenu As Boolean = False
+    Dim sFastCashActivo As String = ""
+    Dim bFastCashWaitActivo As Boolean = False
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim aptraIsOnExceptionScreen As Boolean = False ' Destraba el cajero en fallas de hardware
@@ -167,6 +169,20 @@ Public Class Form1
         End Try
     End Function
 
+    Private Function EsUrlFastCash(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\fastcash.html") OrElse
+               u.EndsWith("/fastcash.html") OrElse
+               u.EndsWith("\fastcash2.html") OrElse
+               u.EndsWith("/fastcash2.html")
+    End Function
+
+    Private Function EsUrlFaltaBilletesDinamico(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\faltabilletesdinamico.html") OrElse
+               u.EndsWith("/faltabilletesdinamico.html")
+    End Function
+
     Private Sub LoadHoleConfigFromIni(screenId As String)
         Try
             Dim reqTransparent As String = ReadIni(screenId, "TRANSPARENT", ConfigManager.ScreensFile).Trim().ToUpper()
@@ -245,7 +261,7 @@ Public Class Form1
         ndcL = ndc.DatoL
         ndcM = ndc.DatoM
         ndcN = ndc.DatoN
-        sComision = ndc.MontoFO
+        sComision = If(ndc.MontoFO <> "", ndc.MontoFO, ndc.DatoE)
     End Sub
 
     Private Sub RegistrarMenuHostSinNavegar(ndc As MensajeNDC, archivo As String)
@@ -347,6 +363,54 @@ Public Class Form1
         Return contenidoOriginal
     End Function
 
+    Private Function NormalizarTextoHost(texto As String) As String
+        If String.IsNullOrEmpty(texto) Then Return ""
+
+        Dim limpio As String = texto.ToUpperInvariant()
+
+        limpio = limpio.Replace(vbCr, " ")
+        limpio = limpio.Replace(vbLf, " ")
+        limpio = limpio.Replace(vbTab, " ")
+        limpio = limpio.Replace(Chr(12), " ")
+        limpio = limpio.Replace(Chr(15), " ")
+        limpio = limpio.Replace(Chr(27), " ")
+        limpio = limpio.Replace(Chr(28), " ")
+        limpio = limpio.Replace(Chr(29), " ")
+        limpio = limpio.Replace(Chr(160), " ")
+
+        limpio = limpio.Replace("Á", "A")
+        limpio = limpio.Replace("É", "E")
+        limpio = limpio.Replace("Í", "I")
+        limpio = limpio.Replace("Ó", "O")
+        limpio = limpio.Replace("Ú", "U")
+
+        While limpio.Contains("  ")
+            limpio = limpio.Replace("  ", " ")
+        End While
+
+        Return limpio.Trim()
+    End Function
+
+    Private Function EsFaltaDenominacionHost(contenido As String) As Boolean
+        Dim textoHost As String = NormalizarTextoHost(contenido)
+
+        Return textoHost.Contains("MONTO O DENOMINACION NO PERMITIDO") OrElse
+            textoHost.Contains("NO CONTAMOS CON BILLETES DE LA DENOMINACION SOLICITADA")
+    End Function
+
+    Private Function EsFaltaDenominacionPostDispensacion(ndc As MensajeNDC, contenido As String) As Boolean
+        Dim pantallaActual As String = If(currentScreen, "").ToLowerInvariant()
+
+        If Not pantallaActual.Contains("thanksdisp") Then
+            Return False
+        End If
+
+        Dim textoHost As String = NormalizarTextoHost(contenido)
+
+        Return ndc.CodigoTransaccion = "056" AndAlso
+            (textoHost.Contains("NO SE PUDO DISPENSAR") OrElse textoHost.Contains("POSIBLE REVERSO"))
+    End Function
+
     Private Sub Timer1_Tick(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles Timer1.Tick
         Dim sValue As String
         Dim sData As String
@@ -367,6 +431,16 @@ Public Class Form1
                 Trace("SCREENS.NUM recibido: " + sValue)
 
                 Dim allowScreen As Boolean = True
+
+                If bFaltaBilletesDesdeMenu AndAlso EsUrlFaltaBilletesDinamico(currentScreen) AndAlso
+                   (sValue = "300" OrElse sValue = "701") Then
+                    Trace("Ignorando " & sValue & " mientras FaltaBilletesDinamico está activo desde FastCash")
+                    allowScreen = False
+                ElseIf sValue = "300" AndAlso sFastCashActivo <> "" AndAlso
+                       EsUrlFastCash(currentScreen) AndAlso Not bFaltaBilletesDesdeMenu Then
+                    bFastCashWaitActivo = True
+                    Trace("FastCash activo entra a wait; si llega 701 se regresará a FastCash")
+                End If
 
                 If sValue = "701" AndAlso DateTime.Now < tiempoBloqueo701 Then
                     Trace("Ignorando 701 por periodo de gracia (Falta de billetes activa).")
@@ -448,6 +522,15 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub InvokeScriptOpcional(nombreScript As String)
+        Try
+            If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
+                WebBrowser1.Document.InvokeScript(nombreScript)
+            End If
+        Catch ex As Exception
+        End Try
+    End Sub
+
     Public Sub wb_RevisaEstadusDevices()
         Try
             Trace("Revision de dispositivos solicitada desde HTML")
@@ -467,8 +550,10 @@ Public Class Form1
 
                                                         If isPrinterErr Then
                                                             WebBrowser1.Document.InvokeScript("showErrPrinter")
+                                                            InvokeScriptOpcional("hideBtnConsultaSaldo")
                                                         Else
                                                             WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                                                            InvokeScriptOpcional("showBtnConsultaSaldo")
                                                         End If
 
                                                         If isHostError Then
@@ -669,6 +754,8 @@ Public Class Form1
                 sretur = globalMultiplosDin
             Case "montoMaxDin"
                 sretur = globalMontoMaximoDin
+            Case "cajeroSinEfectivo"
+                sretur = If(AreAnyCassettesEmpty(), "1", "0")
             Case "multiploMin"
                 CalcularValoresDinamicos()
                 sretur = globalMultiploMinimoDin
@@ -788,7 +875,7 @@ Public Class Form1
 
             Trace("Msg NDC: " & contenido)
 
-            Dim esFaltaDenominacion As Boolean = contenido.Contains("MONTO O DENOMINACION NO PERMITIDO") OrElse contenido.Contains("NO CONTAMOS CON BILLETES DE LA DENOMINACION SOLICITADA")
+            Dim esFaltaDenominacion As Boolean = EsFaltaDenominacionHost(contenido)
             Dim urlHostCandidata As String = ResolverUrlHostNdc(ndc)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
             Dim esError As Boolean = False
@@ -882,30 +969,40 @@ Public Class Form1
                 End If
             End If
 
+            Dim omitirFaltaDenominacionPostDispensacion As Boolean = False
             If esFaltaDenominacion Then
-                CalcularValoresDinamicos()
-                bFaltaBilletesDesdeMenu = False
-                sPage = "746"
-                Trace("Falta de billetes detectada (Host). Múltiplos calculados: " & globalMultiplosDin)
+                omitirFaltaDenominacionPostDispensacion = EsFaltaDenominacionPostDispensacion(ndc, contenido)
 
-                sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
-                LoadHoleConfigFromIni(sPage)
-                Trace("sURL Msg: " & sUrl)
+                If omitirFaltaDenominacionPostDispensacion Then
+                    Trace("Falta de billetes posterior a thanksDisp/reverso; no se muestra MontoNoPermitido.")
+                    sUrl = ""
+                    sPage = ""
+                    bPantalla = False
+                Else
+                    CalcularValoresDinamicos()
+                    bFaltaBilletesDesdeMenu = False
+                    sPage = "PW0003"
+                    Trace("Falta de billetes detectada por Host; no se muestra FaltaBilletesDinamico fuera de FastCash.")
 
-                If sUrl = "" Then
-                    tiempoBloqueo701 = DateTime.Now.AddSeconds(6)
-                    Trace("Iniciando cooldown de 6 segundos para ignorar el Menú (701).")
+                    sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
+                    LoadHoleConfigFromIni(sPage)
+                    Trace("sURL Msg: " & sUrl)
+
+                    If sUrl = "" Then
+                        tiempoBloqueo701 = DateTime.Now.AddSeconds(6)
+                        Trace("Iniciando cooldown de 6 segundos para ignorar el Menú (701).")
+                    End If
                 End If
             End If
 
-            If Not esError AndAlso ndc.Layout <> "" Then
+            If Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.Layout <> "" AndAlso sUrl = "" Then
                 sPage = ndc.Layout
                 bPantalla = True
                 sPage = sPage.Replace("P", "")
                 sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
                 LoadHoleConfigFromIni(sPage)
                 Trace("sURL Msg: " & sUrl)
-            ElseIf Not esError AndAlso ndc.CodigoTransaccion <> "" Then
+            ElseIf Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.CodigoTransaccion <> "" AndAlso sUrl = "" Then
                 Dim fallbackUrl As String = ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
 
                 If ndc.CodigoTransaccion = "055" AndAlso Not esRetiroSinTarjeta Then
@@ -948,7 +1045,7 @@ Public Class Form1
         If sUrl <> "" Then
             Dim sUrlLower As String = sUrl.ToLower()
             Dim esPaginaMenu As Boolean = sUrlLower.Contains("menu") AndAlso Not sUrlLower.Contains("menumore")
-            Dim esFastCash As Boolean = sUrlLower.Contains("fastcash")
+            Dim esFastCash As Boolean = EsUrlFastCash(sUrl)
 
             ' Prevenir que el menú tape la pantalla de impresión.
             ' Algunos mensajes de impresión no traen "TIPO DE TRANSACCION";
@@ -991,6 +1088,8 @@ Public Class Form1
 
             If esFastCash Then
                 urlFastCashGlobal = sUrl
+                sFastCashActivo = sUrl
+                bFastCashWaitActivo = False
             End If
 
             If esPaginaMenu Then
@@ -1051,6 +1150,7 @@ Public Class Form1
                 ElseIf faltaAlgunaDenominacion AndAlso esFastCash Then
                     CalcularValoresDinamicos()
                     bFaltaBilletesDesdeMenu = True
+                    bFastCashWaitActivo = False
                     Dim pantallaFalta As String = "746"
                     Trace("Falta denominación detectada PROACTIVAMENTE en FastCash. Múltiplos: " & globalMultiplosDin & " Max: " & globalMontoMaximoDin)
 
@@ -1066,6 +1166,7 @@ Public Class Form1
                     Dim urlFalta As String = ReadIni(pantallaFalta, "PAGE", ConfigManager.ScreensFile)
                     If urlFalta <> "" Then
                         sUrl = urlFalta
+                        currentScreen = urlFalta
                         LoadHoleConfigFromIni(pantallaFalta)
                     End If
                 Else
@@ -1148,6 +1249,16 @@ Public Class Form1
             Exit Sub
         End If
 
+        If sValue = "850" AndAlso sExp852OriginalUrl <> "" AndAlso
+   WebBrowser1.Url IsNot Nothing AndAlso
+   WebBrowser1.Url.LocalPath.ToLower().EndsWith("exp-851.html") Then
+
+            Trace("850 ignorado: exp-851 ya estaba activo por falla combinada")
+            isExpetionClosePageNDC = False
+            aptraIsOnExceptionScreen = True
+            Exit Sub
+        End If
+
         If sValue = "851" AndAlso sExp852OriginalUrl <> "" Then
             Trace("851 ignorado: exp-851 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
@@ -1171,12 +1282,6 @@ Public Class Form1
         ' encendemos la bandera para obligar a que el clic del usuario se envíe al flujo nativo.
         If sValue = "850" OrElse sValue = "851" OrElse sValue = "852" Then
             aptraIsOnExceptionScreen = True
-
-            ' >>> FIX DEFINITIVO: Le avisamos al sistema proactivo que el cliente YA VIO el error nativo.
-            ' Esto bloquea que NUNCA MÁS se vuelva a mostrar en la sesión (ni en FastCash ni en otro flujo).
-            advertenciaMostrada = True
-            Trace("Pantalla de excepcion FDK " & sValue & " detectada; se evita repetir advertencia en la sesion")
-            ' <<< FIN FIX
         Else
             aptraIsOnExceptionScreen = False
         End If
@@ -1210,6 +1315,10 @@ Public Class Form1
             sErrorCdm = ""
             isExpetionClosePageNDC = False
             advertenciaMostrada = False
+            bFaltaBilletesDesdeMenu = False
+            bFastCashWaitActivo = False
+            sFastCashActivo = ""
+            urlFastCashGlobal = ""
             aptraIsOnExceptionScreen = False
 
             If sValue = "500" Then
@@ -1338,7 +1447,12 @@ Public Class Form1
 
                 Dim sUrlFinal As String = sUrl
 
-                If sValue = "701" AndAlso sMenuActivo <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
+                If sValue = "701" AndAlso bFastCashWaitActivo AndAlso sFastCashActivo <> "" AndAlso
+                   Not bFaltaBilletesDesdeMenu Then
+                    sUrlFinal = sFastCashActivo
+                    bFastCashWaitActivo = False
+                    Trace("701 desde wait con FastCash activo; regresando a FastCash=" & sUrlFinal)
+                ElseIf sValue = "701" AndAlso sMenuActivo <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
                     sUrlFinal = sMenuActivo
                     Trace("701 base INI=" & sUrl & " redirigido a menu activo=" & sUrlFinal)
                 End If
@@ -1438,13 +1552,16 @@ Public Class Form1
                 Dim sUrlActual As String = currentScreen.ToLower()
                 Dim esWelcome As Boolean = sUrlActual.Contains("welcome") OrElse sUrlActual = ""
                 Dim esMenuMore As Boolean = sUrlActual.Contains("menumore")
+                Dim esMenuOtrosBancos As Boolean = sUrlActual.Contains("menuotrosbancossinnip")
 
-                If esWelcome OrElse esMenuMore Then
+                If esWelcome OrElse esMenuMore OrElse esMenuOtrosBancos Then
                     ' >>> FIX: Evaluamos HWERROR, NODEVICE y OFFLINE
                     If sErrorImpresora = "HWERROR" OrElse sErrorImpresora = "NODEVICE" OrElse sErrorImpresora = "OFFLINE" Then
                         WebBrowser1.Document.InvokeScript("showErrPrinter")
+                        InvokeScriptOpcional("hideBtnConsultaSaldo")
                     Else
                         WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                        InvokeScriptOpcional("showBtnConsultaSaldo")
                     End If
                     ' <<< FIN FIX
 
@@ -1613,8 +1730,10 @@ Public Class Form1
 
                         If IsPrinterError() Then
                             WebBrowser1.Document.InvokeScript("showErrPrinter")
+                            InvokeScriptOpcional("hideBtnConsultaSaldo")
                         Else
                             WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                            InvokeScriptOpcional("showBtnConsultaSaldo")
                         End If
 
                         If anyZero Then
@@ -1762,7 +1881,7 @@ Public Class Form1
 
             Dim fisicoStr As String = ReadIni("CDM CASSETTES STATUS", "cassette" & numeroCasetero & "_status", ConfigManager.workFileDevices).Trim().ToUpper()
 
-            If fisicoStr = "EMPTY" Then
+            If fisicoStr = "EMPTY" OrElse fisicoStr = "MISSING" OrElse fisicoStr = "INOPERABLE" Then
                 Return False
             End If
 
@@ -1777,6 +1896,9 @@ Public Class Form1
         Try
             Trace("Regresando a FastCash manualmente a petición del usuario")
             If urlFastCashGlobal <> "" Then
+                bFaltaBilletesDesdeMenu = False
+                bFastCashWaitActivo = False
+                sFastCashActivo = urlFastCashGlobal
                 currentScreen = urlFastCashGlobal
                 WebBrowser1.Navigate(urlFastCashGlobal)
                 Me.Show()
