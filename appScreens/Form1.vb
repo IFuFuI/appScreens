@@ -399,12 +399,6 @@ Public Class Form1
     End Function
 
     Private Function EsFaltaDenominacionPostDispensacion(ndc As MensajeNDC, contenido As String) As Boolean
-        Dim pantallaActual As String = If(currentScreen, "").ToLowerInvariant()
-
-        If Not pantallaActual.Contains("thanksdisp") Then
-            Return False
-        End If
-
         Dim textoHost As String = NormalizarTextoHost(contenido)
 
         Return ndc.CodigoTransaccion = "056" AndAlso
@@ -974,7 +968,7 @@ Public Class Form1
                 omitirFaltaDenominacionPostDispensacion = EsFaltaDenominacionPostDispensacion(ndc, contenido)
 
                 If omitirFaltaDenominacionPostDispensacion Then
-                    Trace("Falta de billetes posterior a thanksDisp/reverso; no se muestra MontoNoPermitido.")
+                    Trace("Falta de billetes por reverso/no dispensado; no se muestra MontoNoPermitido.")
                     sUrl = ""
                     sPage = ""
                     bPantalla = False
