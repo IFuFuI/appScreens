@@ -405,6 +405,31 @@ Public Class Form1
             (textoHost.Contains("NO SE PUDO DISPENSAR") OrElse textoHost.Contains("POSIBLE REVERSO"))
     End Function
 
+    Private Function EsRechazoRetiroSinEfectivoHost(ndc As MensajeNDC, contenido As String) As Boolean
+        Dim textoHost As String = NormalizarTextoHost(contenido)
+
+        Return ndc.CodigoTransaccion = "054" AndAlso
+            (textoHost.Contains("RECHAZO RETIRO-SIN EFECTIVO") OrElse
+             (textoHost.Contains("RECHAZO RETIRO") AndAlso textoHost.Contains("SIN EFECTIVO")))
+    End Function
+
+    Private Function ObtenerUrlRetiroNoCompletado() As String
+        Try
+            Dim welcomeUrl As String = ReadIni("500", "PAGE", ConfigManager.ScreensFile)
+
+            If welcomeUrl <> "" Then
+                Dim pagesPath As String = IO.Path.GetDirectoryName(welcomeUrl)
+                If pagesPath <> "" Then
+                    Return IO.Path.Combine(pagesPath, "RetiroNoCompletado.html")
+                End If
+            End If
+        Catch ex As Exception
+            Trace("Error obteniendo ruta RetiroNoCompletado: " & ex.Message)
+        End Try
+
+        Return "C:\appMain\html\pages\RetiroNoCompletado.html"
+    End Function
+
     Private Sub Timer1_Tick(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles Timer1.Tick
         Dim sValue As String
         Dim sData As String
@@ -964,6 +989,8 @@ Public Class Form1
             End If
 
             Dim omitirFaltaDenominacionPostDispensacion As Boolean = False
+            Dim esRechazoRetiroSinEfectivo As Boolean = EsRechazoRetiroSinEfectivoHost(ndc, contenido)
+
             If esFaltaDenominacion Then
                 omitirFaltaDenominacionPostDispensacion = EsFaltaDenominacionPostDispensacion(ndc, contenido)
 
@@ -989,14 +1016,24 @@ Public Class Form1
                 End If
             End If
 
-            If Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.Layout <> "" AndAlso sUrl = "" Then
+            If esRechazoRetiroSinEfectivo Then
+                sPage = "RetiroNoCompletado"
+                sUrl = ObtenerUrlRetiroNoCompletado()
+                bPantalla = False
+                keepCustomErrorPageActive = True
+                isHostError = False
+                isExpetionClosePageNDC = False
+                Trace("Rechazo retiro sin efectivo detectado; mostrando pantalla custom: " & sUrl)
+            End If
+
+            If Not esRechazoRetiroSinEfectivo AndAlso Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.Layout <> "" AndAlso sUrl = "" Then
                 sPage = ndc.Layout
                 bPantalla = True
                 sPage = sPage.Replace("P", "")
                 sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
                 LoadHoleConfigFromIni(sPage)
                 Trace("sURL Msg: " & sUrl)
-            ElseIf Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.CodigoTransaccion <> "" AndAlso sUrl = "" Then
+            ElseIf Not esRechazoRetiroSinEfectivo AndAlso Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.CodigoTransaccion <> "" AndAlso sUrl = "" Then
                 Dim fallbackUrl As String = ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
 
                 If ndc.CodigoTransaccion = "055" AndAlso Not esRetiroSinTarjeta Then
