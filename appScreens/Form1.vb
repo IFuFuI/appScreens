@@ -65,6 +65,7 @@ Public Class Form1
     Dim sExp850OriginalUrl As String = ""
     ' sLastMenuUrl: Último menú principal mostrado (puede ser menu.html, menuWO-504.html, etc.)
     Dim sLastMenuUrl As String = ""
+    Dim sMenuActivo As String = ""
 
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
@@ -77,6 +78,8 @@ Public Class Form1
     Dim globalMultiploMinimoDin As String = ""
     Dim globalMontoMaximoDin As String = ""
     Dim bFaltaBilletesDesdeMenu As Boolean = False
+    Dim sFastCashActivo As String = ""
+    Dim bFastCashWaitActivo As Boolean = False
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim aptraIsOnExceptionScreen As Boolean = False ' Destraba el cajero en fallas de hardware
@@ -96,7 +99,7 @@ Public Class Form1
     Dim currentHoleHeight As Integer = 0
 
     Private Sub frmsstWait_Load(sender As Object, e As EventArgs) Handles MyBase.Load
-        Trace("Init appScreens V06.04 - Escalamiento Automático")
+        Trace("Inicio appScreens V06.04 - Escalamiento automatico")
         writeINI("LG", "RESULT", "", ConfigManager.WorkFile)
         writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
         writeINI("SCREENS", "DATA", "", ConfigManager.WorkFile)
@@ -121,7 +124,7 @@ Public Class Form1
             If sPotition = "3" Then Me.Location = New Point(-realScreenWidth, 0)
 
         Catch ex As Exception
-            Trace("Error set parameters")
+            Trace("Error al cargar parametros iniciales")
         End Try
 
         Try
@@ -139,12 +142,46 @@ Public Class Form1
 
             AddHandler WebBrowser1.DocumentCompleted, AddressOf WebBrowser1_DocumentCompleted
         Catch ex As Exception
-            Trace("Error init browser")
+            Trace("Error al inicializar navegador local")
         End Try
 
         tmInterfasSuper.Enabled = True
+        LimpiarMensajesObsoletosInicio()
         Me.Hide()
     End Sub
+
+
+    Private Function EsMenuHtmlActual() As Boolean
+        Try
+            Dim cs As String = currentScreen.Trim().ToLower()
+
+            If cs = "" Then Return False
+
+            ' Estados internos de AppScreens NO son pantallas HTML reales.
+            If cs.StartsWith("pantalla_nativa_") Then Return False
+
+            ' Solo consideramos menú cuando currentScreen apunta a un HTML real de menú.
+            If Not cs.EndsWith(".html") Then Return False
+
+            Return cs.Contains("\menu") OrElse cs.Contains("/menu")
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Function EsUrlFastCash(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\fastcash.html") OrElse
+               u.EndsWith("/fastcash.html") OrElse
+               u.EndsWith("\fastcash2.html") OrElse
+               u.EndsWith("/fastcash2.html")
+    End Function
+
+    Private Function EsUrlFaltaBilletesDinamico(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\faltabilletesdinamico.html") OrElse
+               u.EndsWith("/faltabilletesdinamico.html")
+    End Function
 
     Private Sub LoadHoleConfigFromIni(screenId As String)
         Try
@@ -168,6 +205,231 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub BloquearNavegacionPorRechazoHost(ByRef sUrl As String, ByRef sPage As String, ByRef bPantalla As Boolean)
+        isExpetionClosePageNDC = True
+        isHostError = True
+        keepCustomErrorPageActive = False
+        isClosePage = False
+        currentHoleRequired = False
+        sUrl = ""
+        sPage = ""
+        bPantalla = False
+        Me.Hide()
+    End Sub
+
+    Private Function EsUrlMenuHost(sUrl As String) As Boolean
+        Try
+            Dim urlLower As String = sUrl.Trim().ToLower()
+            If urlLower = "" Then Return False
+            If Not urlLower.EndsWith(".html") Then Return False
+            If urlLower.Contains("menumore") Then Return False
+
+            Return urlLower.Contains("\menu") OrElse urlLower.Contains("/menu")
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Function ResolverUrlHostNdc(ndc As MensajeNDC) As String
+        If ndc Is Nothing Then Return ""
+
+        If ndc.Layout <> "" Then
+            Return ReadIni(ndc.Layout.Replace("P", ""), "PAGE", ConfigManager.ScreensFile)
+        End If
+
+        If ndc.CodigoTransaccion <> "" Then
+            Return ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
+        End If
+
+        Return ""
+    End Function
+
+    Private Sub AplicarDatosNdc(ndc As MensajeNDC)
+        If ndc Is Nothing Then Exit Sub
+
+        ndcD = ndc.DatoD
+        ndcE = ndc.DatoE
+        ndcF = ndc.DatoF
+        ndcG = ndc.DatoG
+        ndcH = ndc.DatoH
+        ndcI = ndc.DatoI
+        ndcJ = ndc.DatoJ
+        ndcB = ndc.DatoO
+        ndcC = ndc.DatoB
+        ndcO = ndc.DatoC
+        ndcK = ndc.DatoK
+        ndcL = ndc.DatoL
+        ndcM = ndc.DatoM
+        ndcN = ndc.DatoN
+        sComision = If(ndc.MontoFO <> "", ndc.MontoFO, ndc.DatoE)
+    End Sub
+
+    Private Sub RegistrarMenuHostSinNavegar(ndc As MensajeNDC, archivo As String)
+        Try
+            Dim urlHost As String = ResolverUrlHostNdc(ndc)
+
+            If EsUrlMenuHost(urlHost) Then
+                AplicarDatosNdc(ndc)
+                sMenuActivo = urlHost
+                sLastMenuUrl = urlHost
+                Trace("Excepcion FDK activa: menu host conservado sin navegar (" & urlHost & ") desde " & archivo)
+            End If
+        Catch ex As Exception
+            Trace("Error conservando menu host durante excepcion FDK: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function GetMaxMsgAgeSeconds() As Integer
+        Dim maxAgeSeconds As Integer = 300
+
+        Try
+            Dim iniValue As String = ReadIni("PARAM", "MAX_MSG_AGE_SECONDS", ConfigManager.ConfigAtmClientFile).Trim()
+            If iniValue <> "" Then
+                Integer.TryParse(iniValue, maxAgeSeconds)
+            End If
+        Catch ex As Exception
+            Trace("Error leyendo MAX_MSG_AGE_SECONDS: " & ex.Message)
+        End Try
+
+        If maxAgeSeconds < 30 Then maxAgeSeconds = 300
+        Return maxAgeSeconds
+    End Function
+
+    Private Function EsArchivoMsgObsoleto(archivo As String) As Boolean
+        Try
+            Dim lastWrite As DateTime = File.GetLastWriteTime(archivo)
+            Dim edadSegundos As Double = DateTime.Now.Subtract(lastWrite).TotalSeconds
+
+            If edadSegundos > GetMaxMsgAgeSeconds() Then
+                Trace("MSG obsoleto ignorado/eliminado: " & archivo & " LastWrite=" & lastWrite.ToString("yyyy-MM-dd HH:mm:ss") & " EdadSeg=" & CInt(edadSegundos))
+                Return True
+            End If
+        Catch ex As Exception
+            Trace("Error evaluando antiguedad MSG: " & ex.Message)
+        End Try
+
+        Return False
+    End Function
+
+    Private Function HayExcepcionEsperandoRespuesta() As Boolean
+        Return pageException <> "" AndAlso Not isExpetionClosePageNDC
+    End Function
+
+    Private Sub EliminarArchivoMsgSeguro(archivo As String)
+        Try
+            If File.Exists(archivo) Then
+                File.Delete(archivo)
+            End If
+        Catch ex As Exception
+            Trace("Error al borrar archivo MSG: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub LimpiarMensajesObsoletosInicio()
+        Try
+            Dim archivos = ObtenerArchivosMSGOrdenados(ConfigManager.rutaMsg)
+            For Each archivo In archivos
+                If EsArchivoMsgObsoleto(archivo) Then
+                    EliminarArchivoMsgSeguro(archivo)
+                End If
+            Next
+        Catch ex As Exception
+            Trace("Error limpiando MSG obsoletos al iniciar: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function ExtraerUltimoBloqueNdc(contenidoOriginal As String, archivo As String) As String
+        Try
+            Dim patronInicio As String = "4" & Chr(28)
+            Dim indices As New List(Of Integer)()
+            Dim index As Integer = contenidoOriginal.IndexOf(patronInicio, StringComparison.Ordinal)
+
+            While index >= 0
+                If index = 0 OrElse contenidoOriginal(index - 1) = Chr(10) OrElse contenidoOriginal(index - 1) = Chr(13) Then
+                    indices.Add(index)
+                End If
+
+                index = contenidoOriginal.IndexOf(patronInicio, index + patronInicio.Length, StringComparison.Ordinal)
+            End While
+
+            If indices.Count > 1 Then
+                Trace("MSG con multiples bloques NDC (" & indices.Count & ") detectado: " & archivo & ". Se procesa solo el ultimo para evitar transacciones viejas mezcladas.")
+                Return contenidoOriginal.Substring(indices(indices.Count - 1))
+            End If
+        Catch ex As Exception
+            Trace("Error separando bloques NDC: " & ex.Message)
+        End Try
+
+        Return contenidoOriginal
+    End Function
+
+    Private Function NormalizarTextoHost(texto As String) As String
+        If String.IsNullOrEmpty(texto) Then Return ""
+
+        Dim limpio As String = texto.ToUpperInvariant()
+
+        limpio = limpio.Replace(vbCr, " ")
+        limpio = limpio.Replace(vbLf, " ")
+        limpio = limpio.Replace(vbTab, " ")
+        limpio = limpio.Replace(Chr(12), " ")
+        limpio = limpio.Replace(Chr(15), " ")
+        limpio = limpio.Replace(Chr(27), " ")
+        limpio = limpio.Replace(Chr(28), " ")
+        limpio = limpio.Replace(Chr(29), " ")
+        limpio = limpio.Replace(Chr(160), " ")
+
+        limpio = limpio.Replace("Á", "A")
+        limpio = limpio.Replace("É", "E")
+        limpio = limpio.Replace("Í", "I")
+        limpio = limpio.Replace("Ó", "O")
+        limpio = limpio.Replace("Ú", "U")
+
+        While limpio.Contains("  ")
+            limpio = limpio.Replace("  ", " ")
+        End While
+
+        Return limpio.Trim()
+    End Function
+
+    Private Function EsFaltaDenominacionHost(contenido As String) As Boolean
+        Dim textoHost As String = NormalizarTextoHost(contenido)
+
+        Return textoHost.Contains("MONTO O DENOMINACION NO PERMITIDO") OrElse
+            textoHost.Contains("NO CONTAMOS CON BILLETES DE LA DENOMINACION SOLICITADA")
+    End Function
+
+    Private Function EsFaltaDenominacionPostDispensacion(ndc As MensajeNDC, contenido As String) As Boolean
+        Dim textoHost As String = NormalizarTextoHost(contenido)
+
+        Return ndc.CodigoTransaccion = "056" AndAlso
+            (textoHost.Contains("NO SE PUDO DISPENSAR") OrElse textoHost.Contains("POSIBLE REVERSO"))
+    End Function
+
+    Private Function EsRechazoRetiroSinEfectivoHost(ndc As MensajeNDC, contenido As String) As Boolean
+        Dim textoHost As String = NormalizarTextoHost(contenido)
+
+        Return ndc.CodigoTransaccion = "054" AndAlso
+            (textoHost.Contains("RECHAZO RETIRO-SIN EFECTIVO") OrElse
+             (textoHost.Contains("RECHAZO RETIRO") AndAlso textoHost.Contains("SIN EFECTIVO")))
+    End Function
+
+    Private Function ObtenerUrlRetiroNoCompletado() As String
+        Try
+            Dim welcomeUrl As String = ReadIni("500", "PAGE", ConfigManager.ScreensFile)
+
+            If welcomeUrl <> "" Then
+                Dim pagesPath As String = IO.Path.GetDirectoryName(welcomeUrl)
+                If pagesPath <> "" Then
+                    Return IO.Path.Combine(pagesPath, "RetiroNoCompletado.html")
+                End If
+            End If
+        Catch ex As Exception
+            Trace("Error obteniendo ruta RetiroNoCompletado: " & ex.Message)
+        End Try
+
+        Return "C:\appMain\html\pages\RetiroNoCompletado.html"
+    End Function
+
     Private Sub Timer1_Tick(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles Timer1.Tick
         Dim sValue As String
         Dim sData As String
@@ -185,9 +447,19 @@ Public Class Form1
             tmMsgDevices.Enabled = False
 
             If sValue <> sCurrent Then
-                Trace("[Timer1_Tick] [Info] Screen: " + sValue)
+                Trace("SCREENS.NUM recibido: " + sValue)
 
                 Dim allowScreen As Boolean = True
+
+                If bFaltaBilletesDesdeMenu AndAlso EsUrlFaltaBilletesDinamico(currentScreen) AndAlso
+                   (sValue = "300" OrElse sValue = "701") Then
+                    Trace("Ignorando " & sValue & " mientras FaltaBilletesDinamico está activo desde FastCash")
+                    allowScreen = False
+                ElseIf sValue = "300" AndAlso sFastCashActivo <> "" AndAlso
+                       EsUrlFastCash(currentScreen) AndAlso Not bFaltaBilletesDesdeMenu Then
+                    bFastCashWaitActivo = True
+                    Trace("FastCash activo entra a wait; si llega 701 se regresará a FastCash")
+                End If
 
                 If sValue = "701" AndAlso DateTime.Now < tiempoBloqueo701 Then
                     Trace("Ignorando 701 por periodo de gracia (Falta de billetes activa).")
@@ -197,23 +469,25 @@ Public Class Form1
                 End If
 
                 If sValue = "701" AndAlso bNDCPageActive AndAlso allowScreen Then
-                    Trace("701 recibido con NDC activo, currentScreen=" & currentScreen)
+                    Trace("701 recibido con bNDCPageActive=True, currentScreen=" & currentScreen)
 
                     If pageException <> "" AndAlso Not isExpetionClosePageNDC Then
-                        Trace("701 ignorado - estamos mostrando una pantalla de excepcion proactiva (" & pageException & ")")
+                        Trace("701 ignorado: pageException activa (" & pageException & ")")
                         allowScreen = False
-                    ElseIf currentScreen.ToLower().Contains("menu") Then
-                        Trace("701 con menu activo, forzando bNDCPageActive=False y procesando")
+                    ElseIf EsMenuHtmlActual() Then
+                        Trace("701 con menu HTML activo, forzando bNDCPageActive=False y procesando")
                         bNDCPageActive = False
                     ElseIf currentScreen = "pantalla_nativa_texto" Then
-                        Trace("Primer 701 recibido despues de pantalla nativa, ignorando para mostrar texto")
-                        currentScreen = "pantalla_nativa_texto_esperando_menu"
+                        Trace("701 recibido despues de pantalla nativa texto. Se ignora para no montar menu encima de pantalla nativa.")
+                        currentScreen = "pantalla_nativa_texto_esperando_701"
                         allowScreen = False
-                    ElseIf currentScreen = "pantalla_nativa_texto_esperando_menu" Then
-                        Trace("Segundo 701 recibido, asumiendo fin de pantalla nativa y forzando menu")
-                        bNDCPageActive = False
+
+                    ElseIf currentScreen = "pantalla_nativa_texto_esperando_701" Then
+                        Trace("701 adicional despues de pantalla nativa texto. Se ignora; el flujo nativo sigue activo.")
+                        allowScreen = False
+
                     Else
-                        Trace("701 ignorado - pantalla NDC activa y no es menu")
+                        Trace("701 ignorado: bNDCPageActive=True y currentScreen no es menu")
                         allowScreen = False
                     End If
                 End If
@@ -235,8 +509,8 @@ Public Class Form1
                     If sCurrentData = "KEYPIN" Then sCurrentData = ""
                     If "0123456789*#".Contains(sCurrentData) Then sCurrentData = ""
 
-                    Trace("DATA 2: " + sData)
-                    Trace("DATA 2 currentScreen: " + currentScreen)
+                    Trace("SCREENS.DATA recibido: " + sData)
+                    Trace("SCREENS.DATA currentScreen: " + currentScreen)
 
                     Select Case sData
                         Case "KEYPIN"
@@ -250,14 +524,14 @@ Public Class Form1
                                 WebBrowser1.Document.InvokeScript("recibeData")
                             End If
                         Case Else
-                            Trace("DATA desconocido: " + sData + " screen: " + currentScreen)
+                            Trace("SCREENS.DATA desconocido: " + sData + " currentScreen=" + currentScreen)
                     End Select
                 End If
 
                 writeINI("SCREENS", "DATA", "", ConfigManager.WorkFile)
             End If
         Catch ex As Exception
-            Trace("Error Screens: " + ex.Message)
+            Trace("Error procesando SCREENS: " + ex.Message)
         End Try
 
         Timer1.Enabled = True
@@ -270,27 +544,38 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub InvokeScriptOpcional(nombreScript As String)
+        Try
+            If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
+                WebBrowser1.Document.InvokeScript(nombreScript)
+            End If
+        Catch ex As Exception
+        End Try
+    End Sub
+
     Public Sub wb_RevisaEstadusDevices()
         Try
-            Trace("wb_RevisaEstadusDevices called")
+            Trace("Revision de dispositivos solicitada desde HTML")
             sErrorImpresora = ""
             Task.Run(Sub()
                          Try
                              Dim anyZero As Boolean = AreAnyCassettesEmpty()
                              Dim isPrinterErr As Boolean = IsPrinterError()
-                             Trace("wb_RevisaEstadusDevices - anyZero=" & anyZero & " printerErr=" & isPrinterErr)
+                             Trace("Resultado dispositivos: sinEfectivo=" & anyZero & " errorImpresora=" & isPrinterErr)
                              If Me IsNot Nothing AndAlso Not Me.IsDisposed Then
                                  Me.BeginInvoke(Sub()
                                                     Try
                                                         If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
-                                                            Trace("WebBrowser1.Document is Nothing in wb_RevisaEstadusDevices")
+                                                            Trace("Documento del navegador no disponible durante revision de dispositivos")
                                                             Return
                                                         End If
 
                                                         If isPrinterErr Then
                                                             WebBrowser1.Document.InvokeScript("showErrPrinter")
+                                                            InvokeScriptOpcional("hideBtnConsultaSaldo")
                                                         Else
                                                             WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                                                            InvokeScriptOpcional("showBtnConsultaSaldo")
                                                         End If
 
                                                         If isHostError Then
@@ -309,7 +594,7 @@ Public Class Form1
                                                             WebBrowser1.Document.InvokeScript("hideErrNoCash")
                                                         End If
                                                     Catch ex As Exception
-                                                        Trace("Error invoking cassette script: " & ex.Message)
+                                                        Trace("Error al ejecutar script de estado de cassettes: " & ex.Message)
                                                     End Try
                                                 End Sub)
                              End If
@@ -333,11 +618,11 @@ Public Class Form1
 
             ' Si NINGUNO tiene billetes, están todos vacíos
             Dim allEmpty As Boolean = Not (c1 OrElse c2 OrElse c3 OrElse c4)
-            Trace("AreAnyCassettesEmpty: C1=" & c1 & " C2=" & c2 & " C3=" & c3 & " C4=" & c4 & " allEmpty=" & allEmpty)
+            Trace("Estado cassettes: C1=" & c1 & " C2=" & c2 & " C3=" & c3 & " C4=" & c4 & " todosVacios=" & allEmpty)
 
             Return allEmpty OrElse IsCdmError()
         Catch ex As Exception
-            Trace("Error AreAnyCassettesEmpty: " & ex.Message)
+            Trace("Error al revisar cassettes: " & ex.Message)
             Return False
         End Try
     End Function
@@ -347,7 +632,7 @@ Public Class Form1
             Dim status As String = ReadIni("PTR STATUS", "fwDevice", ConfigManager.workFileDevices).Trim().ToUpper()
             Return status = "HWERROR" OrElse status = "NODEVICE" OrElse status = "OFFLINE"
         Catch ex As Exception
-            Trace("Error IsPrinterError: " & ex.Message)
+            Trace("Error al revisar impresora: " & ex.Message)
             Return False
         End Try
     End Function
@@ -366,7 +651,7 @@ Public Class Form1
 
             Return False
         Catch ex As Exception
-            Trace("Error IsCdmError: " & ex.Message)
+            Trace("Error al revisar dispensador: " & ex.Message)
             Return False
         End Try
     End Function
@@ -438,7 +723,7 @@ Public Class Form1
 
     Public Sub clickPageWait(sPotition As String)
         clickPage(sPotition)
-        Trace("FDK transaccional específico.. mostrando wait proactivamente")
+        Trace("FDK transaccional especifico: mostrando espera")
         ProcesarPantalla("300")
     End Sub
 
@@ -503,6 +788,8 @@ Public Class Form1
                 sretur = globalMultiplosDin
             Case "montoMaxDin"
                 sretur = globalMontoMaximoDin
+            Case "cajeroSinEfectivo"
+                sretur = If(AreAnyCassettesEmpty(), "1", "0")
             Case "multiploMin"
                 CalcularValoresDinamicos()
                 sretur = globalMultiploMinimoDin
@@ -512,13 +799,13 @@ Public Class Form1
                 sretur = ""
         End Select
 
-        Trace("getVar: " + sretur)
+        Trace("Valor solicitado por HTML: " + sretur)
         Return sretur
     End Function
 
     Public Sub setBack()
         Try
-            Trace("SetBack")
+            Trace("Boton regresar configurado")
             WebBrowser1.Navigate(currentScreen)
             Me.Show()
         Catch ex As Exception
@@ -536,8 +823,8 @@ Public Class Form1
         sSuper = ReadIni("NDC", "SUPER", ConfigManager.strRutaInterface)
 
         If sDato = "1" Or sSuper = SupervisorRole Then
-            Trace("Entra a configuracion sDato: " + sDato)
-            Trace("Entra a configuracion sSuper: " + sSuper)
+            Trace("Intento de configuracion: dato=" + sDato)
+            Trace("Intento de configuracion: supervisor=" + sSuper)
 
             writeINI("NDC", "EVENT", "", ConfigManager.strRutaInterface)
             writeINI("NDC", "SUPER", "", ConfigManager.strRutaInterface)
@@ -556,14 +843,14 @@ Public Class Form1
 
                 Process.Start(psi)
 
-                Trace("Se abre configuracion y se oculta appscreen")
+                Trace("Configuracion abierta; appScreens oculto")
             Catch ex As Exception
                 Trace("Error al abrir configuracion: " + ex.Message)
             End Try
         End If
 
         If sDato = "ENDSUPER" Then
-            Trace("Termina supervisor")
+            Trace("Supervisor finalizado")
             writeINI("NDC", "EVENT", "", ConfigManager.strRutaInterface)
             killSupervisor()
         End If
@@ -584,8 +871,14 @@ Public Class Form1
         Dim sImagen As String = String.Empty
         Dim sPage As String = ""
         Dim contenido As String = String.Empty
+        Dim hostErrorEnLote As Boolean = False
 
         For Each archivo In archivos
+            If EsArchivoMsgObsoleto(archivo) Then
+                EliminarArchivoMsgSeguro(archivo)
+                Continue For
+            End If
+
             Try
                 contenido = IO.File.ReadAllText(archivo)
             Catch ex As Exception
@@ -593,46 +886,57 @@ Public Class Form1
                 Exit Sub
             End Try
 
+            contenido = ExtraerUltimoBloqueNdc(contenido, archivo)
+
             If String.IsNullOrWhiteSpace(contenido) Then
-                Try
-                    File.Delete(archivo)
-                Catch ex As Exception
-                    Trace("Error al borrar archivo")
-                End Try
+                EliminarArchivoMsgSeguro(archivo)
+                Continue For
+            End If
+
+            Dim ndc = MensajeNDC.Parse(contenido)
+
+            If HayExcepcionEsperandoRespuesta() Then
+                RegistrarMenuHostSinNavegar(ndc, archivo)
+                Trace("MSG no navegado por excepcion FDK activa; se conserva contexto y se omite HTML. fdk=" & pageException & " archivo=" & archivo)
+                EliminarArchivoMsgSeguro(archivo)
                 Continue For
             End If
 
             tmOut.Enabled = False
             writeINI("APP", "TIMEOUT", "", ConfigManager.WorkFile)
-            Dim ndc = MensajeNDC.Parse(contenido)
 
-            Trace("TipoMensaje: " & ndc.TipoMensaje)
-            Trace("Secuencia: " & ndc.Secuencia)
-            Trace("CodigoTransaccion: " & ndc.CodigoTransaccion)
-            Trace("Pantalla: " & ndc.Pantalla)
-            Trace("Layout: " & ndc.Layout)
+            Trace("NDC recibido: archivo=" & archivo & " tipo=" & ndc.TipoMensaje & " sec=" & ndc.Secuencia & " txn=" & ndc.CodigoTransaccion & " pantalla=" & ndc.Pantalla & " layout=" & ndc.Layout)
 
             Trace("Msg NDC: " & contenido)
 
-            Dim esFaltaDenominacion As Boolean = contenido.Contains("MONTO O DENOMINACION NO PERMITIDO") OrElse contenido.Contains("NO CONTAMOS CON BILLETES DE LA DENOMINACION SOLICITADA")
+            Dim esFaltaDenominacion As Boolean = EsFaltaDenominacionHost(contenido)
+            Dim urlHostCandidata As String = ResolverUrlHostNdc(ndc)
+            Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
             Dim esError As Boolean = False
 
             If contenido.Contains("TRANSACCION RECHAZADA") OrElse (contenido.Contains("CODIGO RESPUESTA") AndAlso Not contenido.Contains("CODIGO RESPUESTA 000")) Then
                 If Not esFaltaDenominacion Then
-                    If contenido.Contains("TIPO DE TRANSACCION") Then
-                        Trace("Encontro un error regresado por Host TIPO DE TRANSACCION, no muestra gracias: ")
+                    If esMenuHostSegunIni Then
+                        Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
+                    ElseIf contenido.Contains("TIPO DE TRANSACCION") Then
+                        Trace("Encontro un error regresado por Host TIPO DE TRANSACCION; se oculta appScreens y no navega HTML local.")
 
-                        If sLastMenuUrl <> "" Then
+                        If sMenuActivo <> "" OrElse sLastMenuUrl <> "" Then
                             Try
-                                Dim basePath As String = sLastMenuUrl.Substring(0, sLastMenuUrl.LastIndexOf("\") + 1)
-                                sLastMenuUrl = basePath & "menuWO-506-noPrint.html"
-                                Trace("Ticket impreso, actualizando sLastMenuUrl a: " & sLastMenuUrl)
+                                Dim menuBase As String = If(sMenuActivo <> "", sMenuActivo, sLastMenuUrl)
+                                Dim basePath As String = menuBase.Substring(0, menuBase.LastIndexOf("\") + 1)
+
+                                sMenuActivo = basePath & "menuWO-506-noPrint.html"
+                                sLastMenuUrl = sMenuActivo
+
+                                Trace("Ticket impreso, actualizando menu activo a: " & sMenuActivo)
                             Catch ex As Exception
                                 Trace("Error al mutar url de menú: " & ex.Message)
                             End Try
                         End If
+                    End If
 
-                    Else
+                    If Not esMenuHostSegunIni Then
                         esError = True
                     End If
                 End If
@@ -684,18 +988,13 @@ Public Class Form1
             End If
 
             If esError Then
-                isExpetionClosePageNDC = True
-                isHostError = True
+                hostErrorEnLote = True
                 sExp852OriginalUrl = currentScreen
                 sExp850OriginalUrl = ""
                 pageException = "8"
+                BloquearNavegacionPorRechazoHost(sUrl, sPage, bPantalla)
                 Trace("procesaDatosNDC: host error detectado => isHostError=True, sExp852OriginalUrl=" & sExp852OriginalUrl)
-
-                If hasFallbackPlanB Then
-                    Trace("Flashazo prevenido: Mantenemos appScreens visible porque existe página custom para " & ndc.CodigoTransaccion)
-                Else
-                    Me.Hide()
-                End If
+                Trace("Rechazo de host: se bloquea navegación HTML local y se deja visible la pantalla nativa.")
             End If
 
             If contenido.Contains("TRANSACCION RECHAZADA") AndAlso contenido.Contains("TIPO DE TRANSACCION") AndAlso Not esFaltaDenominacion Then
@@ -704,30 +1003,52 @@ Public Class Form1
                 End If
             End If
 
+            Dim omitirFaltaDenominacionPostDispensacion As Boolean = False
+            Dim esRechazoRetiroSinEfectivo As Boolean = EsRechazoRetiroSinEfectivoHost(ndc, contenido)
+
             If esFaltaDenominacion Then
-                CalcularValoresDinamicos()
-                bFaltaBilletesDesdeMenu = False
-                sPage = "746"
-                Trace("Falta de billetes detectada (Host). Múltiplos calculados: " & globalMultiplosDin)
+                omitirFaltaDenominacionPostDispensacion = EsFaltaDenominacionPostDispensacion(ndc, contenido)
 
-                sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
-                LoadHoleConfigFromIni(sPage)
-                Trace("sURL Msg: " & sUrl)
+                If omitirFaltaDenominacionPostDispensacion Then
+                    Trace("Falta de billetes por reverso/no dispensado; no se muestra MontoNoPermitido.")
+                    sUrl = ""
+                    sPage = ""
+                    bPantalla = False
+                Else
+                    CalcularValoresDinamicos()
+                    bFaltaBilletesDesdeMenu = False
+                    sPage = "PW0003"
+                    Trace("Falta de billetes detectada por Host; no se muestra FaltaBilletesDinamico fuera de FastCash.")
 
-                If sUrl = "" Then
-                    tiempoBloqueo701 = DateTime.Now.AddSeconds(6)
-                    Trace("Iniciando cooldown de 6 segundos para ignorar el Menú (701).")
+                    sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
+                    LoadHoleConfigFromIni(sPage)
+                    Trace("sURL Msg: " & sUrl)
+
+                    If sUrl = "" Then
+                        tiempoBloqueo701 = DateTime.Now.AddSeconds(6)
+                        Trace("Iniciando cooldown de 6 segundos para ignorar el Menú (701).")
+                    End If
                 End If
             End If
 
-            If ndc.Layout <> "" Then
+            If esRechazoRetiroSinEfectivo Then
+                sPage = "RetiroNoCompletado"
+                sUrl = ObtenerUrlRetiroNoCompletado()
+                bPantalla = False
+                keepCustomErrorPageActive = True
+                isHostError = False
+                isExpetionClosePageNDC = False
+                Trace("Rechazo retiro sin efectivo detectado; mostrando pantalla custom: " & sUrl)
+            End If
+
+            If Not esRechazoRetiroSinEfectivo AndAlso Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.Layout <> "" AndAlso sUrl = "" Then
                 sPage = ndc.Layout
                 bPantalla = True
                 sPage = sPage.Replace("P", "")
                 sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
                 LoadHoleConfigFromIni(sPage)
                 Trace("sURL Msg: " & sUrl)
-            ElseIf ndc.CodigoTransaccion <> "" Then
+            ElseIf Not esRechazoRetiroSinEfectivo AndAlso Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.CodigoTransaccion <> "" AndAlso sUrl = "" Then
                 Dim fallbackUrl As String = ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
 
                 If ndc.CodigoTransaccion = "055" AndAlso Not esRetiroSinTarjeta Then
@@ -751,46 +1072,50 @@ Public Class Form1
             End If
 
             If sUrl <> "" Then
-                ndcD = ndc.DatoD
-                ndcE = ndc.DatoE
-                ndcF = ndc.DatoF
-                ndcG = ndc.DatoG
-                ndcH = ndc.DatoH
-                ndcI = ndc.DatoI
-                ndcJ = ndc.DatoJ
-                ndcB = ndc.DatoO
-                ndcC = ndc.DatoB
-                ndcO = ndc.DatoC
-                ndcK = ndc.DatoK
-                ndcL = ndc.DatoL
-                ndcM = ndc.DatoM
-                ndcN = ndc.DatoN
-                sComision = ndc.MontoFO
+                AplicarDatosNdc(ndc)
             End If
 
             Try
-                If File.Exists(archivo) Then
-                    File.Delete(archivo)
-                End If
+                EliminarArchivoMsgSeguro(archivo)
             Catch ex As Exception
                 Trace("Error al borrar archivo")
             End Try
         Next
 
+        If hostErrorEnLote Then
+            Trace("Host error en lote: navegación final cancelada para no montar HTML sobre pantalla nativa.")
+            ocultarPantalla()
+            Exit Sub
+        End If
+
         If sUrl <> "" Then
             Dim sUrlLower As String = sUrl.ToLower()
             Dim esPaginaMenu As Boolean = sUrlLower.Contains("menu") AndAlso Not sUrlLower.Contains("menumore")
-            Dim esFastCash As Boolean = sUrlLower.Contains("fastcash")
+            Dim esFastCash As Boolean = EsUrlFastCash(sUrl)
 
-            ' Prevenir que el menú tape la pantalla de impresión
-            Dim esImpresionPrematura As Boolean = contenido.Contains("TIPO DE TRANSACCION") AndAlso esPaginaMenu
+            ' Prevenir que el menú tape la pantalla de impresión.
+            ' Algunos mensajes de impresión no traen "TIPO DE TRANSACCION";
+            ' por ejemplo consulta de saldo con impresión puede venir como P6610
+            ' y contener "IMPRESION CONSULTA DE SALDO" + bloque de recibo.
+            Dim esMensajeConTicket As Boolean =
+                contenido.Contains("IMPRESION") OrElse
+                contenido.Contains("FOLIO.") OrElse
+                contenido.Contains("NUM-AUTORIZACION") OrElse
+                contenido.Contains("COMISION POR USO ATM") OrElse
+                contenido.Contains("TARJETA:") OrElse
+                contenido.Contains("CTA. DE AHORRO") OrElse
+                contenido.Contains("SALDO TOT.") OrElse
+                contenido.Contains("DISPONIBLE:") OrElse
+                contenido.Contains(Chr(29) & "2")
+
+            Dim esImpresionPrematura As Boolean = esPaginaMenu AndAlso esMensajeConTicket
 
             ' Si es una impresión prematura, NO mostramos la pantalla aún
             If Not isExpetionClosePageNDC AndAlso Not esImpresionPrematura Then
                 Me.Show()
             End If
 
-            Trace("Muestra Pantalla DatosNDC")
+            Trace("Mostrando pantalla HTML por mensaje NDC")
             ClickEnVentana.MoverMouse00()
             Dim sClose As String = String.Empty
 
@@ -809,10 +1134,16 @@ Public Class Form1
 
             If esFastCash Then
                 urlFastCashGlobal = sUrl
+                sFastCashActivo = sUrl
+                bFastCashWaitActivo = False
             End If
 
             If esPaginaMenu Then
+                ' Guardamos el menú real que mandó el host/switch.
+                ' Este se mantiene como menú activo hasta que otro menú lo reemplace.
+                sMenuActivo = sUrl
                 sLastMenuUrl = sUrl
+                Trace("Menu activo actualizado por host: " & sMenuActivo)
             End If
 
             ' Agregamos la condición para que no dispare alertas si está imprimiendo
@@ -827,7 +1158,7 @@ Public Class Form1
                 Dim faltaAlgunaDenominacion As Boolean = (Not c1 OrElse Not c2 OrElse Not c3 OrElse Not c4) AndAlso Not fallaDispensador
 
                 If fallaDispensador AndAlso fallaImpresora Then
-                    Trace("Ambos errores detectados - redirigiendo a exp-851 proactivamente")
+                    Trace("Falla de efectivo e impresora detectada; mostrando exp-851")
                     advertenciaMostrada = True
                     sExp852OriginalUrl = sUrl
                     sExp850OriginalUrl = ""
@@ -839,7 +1170,7 @@ Public Class Form1
                     sUrl = sUrlBase & "exp-851.html"
                     currentHoleRequired = False
                 ElseIf fallaDispensador Then
-                    Trace("Sin efectivo o Error CDM - redirigiendo a exp-852 proactivamente")
+                    Trace("Falla de efectivo/dispensador detectada; mostrando exp-852")
                     advertenciaMostrada = True
                     sExp852OriginalUrl = sUrl
                     sExp850OriginalUrl = ""
@@ -851,7 +1182,7 @@ Public Class Form1
                     sUrl = sUrlBase & "exp-852.html"
                     currentHoleRequired = False
                 ElseIf fallaImpresora Then
-                    Trace("Error impresora - redirigiendo a exp-850")
+                    Trace("Falla de impresora detectada; mostrando exp-850")
                     advertenciaMostrada = True
                     sExp850OriginalUrl = sUrl
                     sExp852OriginalUrl = ""
@@ -865,6 +1196,7 @@ Public Class Form1
                 ElseIf faltaAlgunaDenominacion AndAlso esFastCash Then
                     CalcularValoresDinamicos()
                     bFaltaBilletesDesdeMenu = True
+                    bFastCashWaitActivo = False
                     Dim pantallaFalta As String = "746"
                     Trace("Falta denominación detectada PROACTIVAMENTE en FastCash. Múltiplos: " & globalMultiplosDin & " Max: " & globalMontoMaximoDin)
 
@@ -880,11 +1212,12 @@ Public Class Form1
                     Dim urlFalta As String = ReadIni(pantallaFalta, "PAGE", ConfigManager.ScreensFile)
                     If urlFalta <> "" Then
                         sUrl = urlFalta
+                        currentScreen = urlFalta
                         LoadHoleConfigFromIni(pantallaFalta)
                     End If
                 Else
                     If esFastCash Then
-                        Trace("Es FastCash sin fallo de Hardware. Forzando Me.Show() para evitar pantalla en blanco.")
+                        Trace("FastCash sin falla de hardware; se mantiene visible appScreens")
                         isExpetionClosePageNDC = False
                         Me.Show()
                     End If
@@ -895,15 +1228,37 @@ Public Class Form1
 
             ' Abortamos la navegación prematura y nos ocultamos
             If esImpresionPrematura Then
-                Trace("Impresion en curso (TIPO DE TRANSACCION). Ocultamos appScreens y esperamos al 701 para mostrar el menu.")
-                Me.Hide()
+                Trace("Impresion en curso detectada por ticket/recibo; mostrando espera y conservando menu activo para 701: " & sUrl)
+
+                ' Aunque no naveguemos todavía al menú, este ya es el nuevo menú activo.
+                ' Ejemplo: menu661.html después de imprimir consulta de saldo.
+                sMenuActivo = sUrl
+                sLastMenuUrl = sUrl
+                Trace("Menu activo actualizado por impresion: " & sMenuActivo)
+
+                Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile)
+
+                If sWaitUrl <> "" Then
+                    currentScreen = sWaitUrl
+                    WebBrowser1.Navigate(sWaitUrl)
+                    Me.Show()
+                Else
+                    Trace("No se encontro PAGE para estado 300; se oculta appScreens como respaldo")
+                    Me.Hide()
+                End If
+
                 bNDCPageActive = False
             Else
                 Trace("Navega page Url DatosNDC: " + sUrl)
                 WebBrowser1.Navigate(sUrl)
             End If
 
+
         Else
+            ' No hubo PAGE para este layout/código; dejamos pasar pantalla nativa.
+            ' Limpiamos menu previo para evitar que un 701/513 posterior regrese al menu anterior.
+            sLastMenuUrl = ""
+
             sImagen = ReadIni(sPage, "PIC", ConfigManager.ScreensFile)
             If sImagen <> "" Then
                 Try
@@ -934,7 +1289,7 @@ Public Class Form1
                     ' --- FIN MULTILENGUAJE ---
 
                     dllInterfaceNdc.showScreenNDC(CInt(sImagen))
-                    Trace("Muestra Pantalla PIC")
+                    Trace("Mostrando pantalla nativa por PIC")
                     ocultarPantalla()
 
                     bNDCPageActive = True
@@ -960,21 +1315,31 @@ Public Class Form1
         ' Dim sIdioma As String -> Ya no lo necesitamos como variable local directa, se maneja abajo.
 
         If sValue = "850" AndAlso sExp850OriginalUrl <> "" Then
-            Trace("850 ignorado - exp-850 ya activo proactivamente. Marcando IsOnExceptionScreen=True")
+            Trace("850 ignorado: exp-850 ya estaba activo; se mantiene bandera de excepcion nativa")
+            isExpetionClosePageNDC = False
+            aptraIsOnExceptionScreen = True
+            Exit Sub
+        End If
+
+        If sValue = "850" AndAlso sExp852OriginalUrl <> "" AndAlso
+   WebBrowser1.Url IsNot Nothing AndAlso
+   WebBrowser1.Url.LocalPath.ToLower().EndsWith("exp-851.html") Then
+
+            Trace("850 ignorado: exp-851 ya estaba activo por falla combinada")
             isExpetionClosePageNDC = False
             aptraIsOnExceptionScreen = True
             Exit Sub
         End If
 
         If sValue = "851" AndAlso sExp852OriginalUrl <> "" Then
-            Trace("851 ignorado - exp-851 ya activo proactivamente. Marcando IsOnExceptionScreen=True")
+            Trace("851 ignorado: exp-851 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
             aptraIsOnExceptionScreen = True
             Exit Sub
         End If
 
         If sValue = "852" AndAlso sExp852OriginalUrl <> "" Then
-            Trace("852 ignorado - exp-852 ya activo proactivamente. Marcando IsOnExceptionScreen=True")
+            Trace("852 ignorado: exp-852 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
             aptraIsOnExceptionScreen = True
             Exit Sub
@@ -986,15 +1351,9 @@ Public Class Form1
         End If
 
         ' >>> FIX: Cuando sale la pantalla de excepción (nativa) por segunda o más veces,
-        ' encendemos la bandera para obligar a que el clic del usuario se envíe a APTRA.
+        ' encendemos la bandera para obligar a que el clic del usuario se envíe al flujo nativo.
         If sValue = "850" OrElse sValue = "851" OrElse sValue = "852" Then
             aptraIsOnExceptionScreen = True
-
-            ' >>> FIX DEFINITIVO: Le avisamos al sistema proactivo que el cliente YA VIO el error nativo.
-            ' Esto bloquea que NUNCA MÁS se vuelva a mostrar en la sesión (ni en FastCash ni en otro flujo).
-            advertenciaMostrada = True
-            Trace("Pantalla de excepción nativa FDK " & sValue & " detectada. Se marca advertenciaMostrada = True para no repetir.")
-            ' <<< FIN FIX
         Else
             aptraIsOnExceptionScreen = False
         End If
@@ -1083,8 +1442,19 @@ Public Class Form1
             sErrorCdm = ""
             isExpetionClosePageNDC = False
             advertenciaMostrada = False
+            bFaltaBilletesDesdeMenu = False
+            bFastCashWaitActivo = False
+            sFastCashActivo = ""
+            urlFastCashGlobal = ""
             aptraIsOnExceptionScreen = False
-            Trace("ProcesarPantalla: clear isHostError y exception NDC (pantalla 513/500)")
+
+            If sValue = "500" Then
+                sMenuActivo = ""
+                sLastMenuUrl = ""
+                Trace("Nueva sesion detectada")
+            End If
+
+            Trace("Limpieza de banderas por estado " & sValue & ": hostError/excepcionNDC")
             If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
                 Try
                     WebBrowser1.Document.InvokeScript("showBtnRetiro")
@@ -1093,7 +1463,7 @@ Public Class Form1
             End If
         ElseIf sValue = "701" Then
             bNDCPageActive = False
-            Trace("ProcesarPantalla: 701 recibido, conservando memoria de errores")
+            Trace("Estado 701 recibido; se conserva memoria de errores y menu activo")
         End If
 
         If sValue = "850" OrElse sValue = "852" OrElse sValue = "851" Then
@@ -1102,10 +1472,10 @@ Public Class Form1
 
         If isExpetionClosePageNDC Then
             If sValue = "701" Then
-                Trace("701 en estado de excepción NDC: reanuda el flujo sin ocultar pantalla")
+                Trace("701 recibido durante cierre por excepcion NDC; se reanuda flujo")
                 isExpetionClosePageNDC = False
             Else
-                Trace("Es Close por excepcion NDC oculata pantalla")
+                Trace("Cierre por excepcion NDC; se oculta appScreens")
                 isExpetionClosePageNDC = False
                 Me.Hide()
                 Exit Sub
@@ -1125,17 +1495,17 @@ Public Class Form1
 
         If sValue = "513" Then
             If isHostError Then
-                Trace("513 interceptado: Error de Host detectado. Forzando ocultar para ver pantalla nativa.")
+                Trace("513 interceptado por error de host; se oculta appScreens para mostrar pantalla nativa")
                 sValue = "hide"
                 isHostError = False
             ElseIf currentScreen.ToLower().Contains("menu") OrElse
                    Not Me.Visible OrElse
                    currentScreen = "pantalla_nativa_pic" OrElse
                    currentScreen = "pantalla_nativa_texto" OrElse
-                   currentScreen = "pantalla_nativa_texto_esperando_menu" OrElse
+                   currentScreen = "pantalla_nativa_texto_esperando_701" OrElse
                    currentScreen = "" Then
 
-                Trace("513 interceptado: Cancelación desde menú o flujo nativo. Mantenemos oculto.")
+                Trace("513 interceptado por cancelacion/menu/flujo nativo; appScreens permanece oculto")
                 sValue = "hide"
             End If
         End If
@@ -1205,9 +1575,21 @@ Public Class Form1
                 End If
 
                 Dim sUrlFinal As String = sUrl
-                If sValue = "701" AndAlso sLastMenuUrl <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
-                    sUrlFinal = sLastMenuUrl
-                    Trace("701 redirigido a menú correcto: " & sUrlFinal)
+
+                If sValue = "701" AndAlso bFastCashWaitActivo AndAlso sFastCashActivo <> "" AndAlso
+                   Not bFaltaBilletesDesdeMenu Then
+                    sUrlFinal = sFastCashActivo
+                    bFastCashWaitActivo = False
+                    Trace("701 desde wait con FastCash activo; regresando a FastCash=" & sUrlFinal)
+                ElseIf sValue = "701" AndAlso sMenuActivo <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
+                    sUrlFinal = sMenuActivo
+                    Trace("701 base INI=" & sUrl & " redirigido a menu activo=" & sUrlFinal)
+                End If
+
+                ' Aseguramos que currentScreen refleje la URL REAL navegada,
+                ' no el menu.html base.
+                If Not (sUrlFinal.ToLower().Contains("wait") OrElse sUrlFinal.ToLower().Contains("read")) Then
+                    currentScreen = sUrlFinal
                 End If
 
                 Trace("Navega page Url: " + sUrlFinal)
@@ -1230,7 +1612,7 @@ Public Class Form1
                         Trace("Pagina 701 anidada")
                     Else
                         If sValue <> "back" Then
-                            If sValue <> "hide" Then Trace("Pagina No se encuentra")
+                            If sValue <> "hide" Then Trace("Estado sin PAGE/PIC configurado")
                             sValue = "hide"
                         End If
                     End If
@@ -1256,7 +1638,7 @@ Public Class Form1
     End Sub
 
     Public Sub ocultarPantalla()
-        Trace("Oculta Pantalla")
+        Trace("Ocultando appScreens")
         tmMsgDevices.Enabled = False
         Me.Hide()
         sCurrent = ""
@@ -1265,7 +1647,7 @@ Public Class Form1
 
     Private Sub tmOut_Tick(sender As Object, e As EventArgs) Handles tmOut.Tick
         tmOut.Enabled = False
-        Trace("TimeOut")
+        Trace("Timeout de appScreens")
         Me.Hide()
         writeINI("APP", "TIMEOUT", "ON", ConfigManager.WorkFile)
     End Sub
@@ -1274,7 +1656,7 @@ Public Class Form1
         If e.Control AndAlso e.KeyCode = Keys.S Then
             e.Handled = True
             Try
-                Trace("Termina Applicaion")
+                Trace("Finalizando aplicacion")
                 Dim exeWait As String = "C:\appMain\application\DSC Kill.cmd"
                 Process.Start(exeWait)
             Catch ex As Exception
@@ -1301,13 +1683,16 @@ Public Class Form1
                 Dim sUrlActual As String = currentScreen.ToLower()
                 Dim esWelcome As Boolean = sUrlActual.Contains("welcome") OrElse sUrlActual = ""
                 Dim esMenuMore As Boolean = sUrlActual.Contains("menumore")
+                Dim esMenuOtrosBancos As Boolean = sUrlActual.Contains("menuotrosbancossinnip")
 
-                If esWelcome OrElse esMenuMore Then
+                If esWelcome OrElse esMenuMore OrElse esMenuOtrosBancos Then
                     ' >>> FIX: Evaluamos HWERROR, NODEVICE y OFFLINE
                     If sErrorImpresora = "HWERROR" OrElse sErrorImpresora = "NODEVICE" OrElse sErrorImpresora = "OFFLINE" Then
                         WebBrowser1.Document.InvokeScript("showErrPrinter")
+                        InvokeScriptOpcional("hideBtnConsultaSaldo")
                     Else
                         WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                        InvokeScriptOpcional("showBtnConsultaSaldo")
                     End If
                     ' <<< FIN FIX
 
@@ -1317,9 +1702,9 @@ Public Class Form1
                         WebBrowser1.Document.InvokeScript("showBtnRetiro")
                     End If
 
-                    Trace("Invoke Welcome ptr")
+                    Trace("Actualizando pantalla welcome por cambio de impresora")
                 Else
-                    Trace("Cambio impresora detectado pero no en welcome/menuMore - no invoke (" & currentScreen & ")")
+                    Trace("Cambio de impresora detectado fuera de welcome/menuMore; no se actualiza HTML (" & currentScreen & ")")
                 End If
             End If
         Catch ex As Exception
@@ -1332,7 +1717,7 @@ Public Class Form1
         Try
             If sEstatusCdm <> sErrorCdm Then
                 sErrorCdm = sEstatusCdm
-                Trace("Cambio Estatus Disppensador: " + sEstatusCdm)
+                Trace("Cambio estatus dispensador: " + sEstatusCdm)
 
                 If IsCdmError() Then
                     WebBrowser1.Document.InvokeScript("showErrCdm")
@@ -1343,21 +1728,21 @@ Public Class Form1
                 End If
 
                 If isHostError Then
-                    Trace("checkEstusCdm: host error activo, ocultando btn retiro")
+                    Trace("Dispensador: error host activo; ocultando boton retiro")
                     WebBrowser1.Document.InvokeScript("showErrHost")
                     WebBrowser1.Document.InvokeScript("showErrNoCash")
                 Else
                     WebBrowser1.Document.InvokeScript("hideErrHost")
                 End If
 
-                Trace("Invoke Welcome cmd")
+                Trace("Actualizando pantalla welcome por cambio de dispensador")
 
                 If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
                     If IsCdmError() Then
-                        Trace("checkEstusCdm: cdm error, ocultando btn retiro")
+                        Trace("Dispensador con error; ocultando boton retiro")
                         WebBrowser1.Document.InvokeScript("hideBtnRetiro")
                     Else
-                        Trace("checkEstusCdm: cdm OK y host OK, mostrando btn retiro")
+                        Trace("Dispensador y host OK; mostrando boton retiro")
                         WebBrowser1.Document.InvokeScript("showBtnRetiro")
                     End If
                 End If
@@ -1388,14 +1773,14 @@ Public Class Form1
             End If
 
             If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
-                If imprimirLog Then Trace("WebBrowser1.Document is Nothing, cannot invoke script")
+                If imprimirLog Then Trace("Documento del navegador no disponible; no se ejecuta script")
                 Return
             End If
 
             Dim allCassetteEmpty As Boolean = Not (c1 OrElse c2 OrElse c3 OrElse c4)
 
             If allCassetteEmpty OrElse IsCdmError() Then
-                If imprimirLog Then Trace("Invocando hideBtnRetiro + showErrNoCash (4 cassettes en 0 y/o error dispensador)")
+                If imprimirLog Then Trace("Ocultando retiro y mostrando error sin efectivo/error dispensador")
                 WebBrowser1.Document.InvokeScript("hideBtnRetiro")
                 WebBrowser1.Document.InvokeScript("showErrNoCash")
             Else
@@ -1420,7 +1805,7 @@ Public Class Form1
             Dim nombreProceso As String = "appConfigurador.exe"
             Dim procesos() As Process = Process.GetProcessesByName(System.IO.Path.GetFileNameWithoutExtension(nombreProceso))
             If procesos.Length > 0 Then
-                Trace("Se encontrol supervisor en welcome, se cierra")
+                Trace("Supervisor detectado en welcome; se cierra proceso supervisor")
                 For Each p As Process In procesos
                     Try
                         p.Kill()
@@ -1438,6 +1823,40 @@ Public Class Form1
         Trace("Cerrando appScreens")
     End Sub
 
+    Private Sub AplicarResponsiveHtml()
+        Try
+            If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then Exit Sub
+
+            Dim viewportWidth As Integer = Math.Max(1, WebBrowser1.ClientSize.Width)
+            Dim viewportHeight As Integer = Math.Max(1, WebBrowser1.ClientSize.Height)
+            Dim scaleX As String = (viewportWidth / 1024.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim scaleY As String = (viewportHeight / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim viewportWidthText As String = viewportWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim viewportHeightText As String = viewportHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)
+
+            Dim script As String =
+                "(function(){" &
+                "var d=document,b=d.body,e=d.documentElement;if(!b||!e){return;}" &
+                "var s=d.getElementById('appScreensResponsiveStyle');" &
+                "if(!s){s=d.createElement('style');s.id='appScreensResponsiveStyle';s.type='text/css';" &
+                "s.styleSheet?s.styleSheet.cssText='html,body{margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important;}body{background-size:100% 100%!important;background-repeat:no-repeat!important;background-position:left top!important;}':s.appendChild(d.createTextNode('html,body{margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important;}body{background-size:100% 100%!important;background-repeat:no-repeat!important;background-position:left top!important;}'));" &
+                "(d.getElementsByTagName('head')[0]||e).appendChild(s);}" &
+                "e.style.margin='0px';e.style.padding='0px';e.style.width='" & viewportWidthText & "px';e.style.height='" & viewportHeightText & "px';e.style.overflow='hidden';" &
+                "b.style.margin='0px';b.style.padding='0px';b.style.width='" & viewportWidthText & "px';b.style.height='" & viewportHeightText & "px';b.style.minHeight='" & viewportHeightText & "px';b.style.overflow='hidden';" &
+                "b.style.backgroundSize='100% 100%';b.style.backgroundRepeat='no-repeat';b.style.backgroundPosition='left top';" &
+                "var r=d.getElementById('appScreensResponsiveRoot');" &
+                "if(!r){r=d.createElement('div');r.id='appScreensResponsiveRoot';while(b.firstChild){r.appendChild(b.firstChild);}b.appendChild(r);}" &
+                "r.style.position='absolute';r.style.left='0px';r.style.top='0px';r.style.width='1024px';r.style.height='768px';r.style.overflow='hidden';" &
+                "r.style.transformOrigin='top left';r.style.msTransformOrigin='top left';r.style.transform='scale(" & scaleX & "," & scaleY & ")';r.style.msTransform='scale(" & scaleX & "," & scaleY & ")';" &
+                "if(window.scrollTo){window.scrollTo(0,0);}" &
+                "})();"
+
+            WebBrowser1.Document.InvokeScript("eval", New Object() {script})
+        Catch ex As Exception
+            Trace("Error inyectando reescalado HTML: " & ex.Message)
+        End Try
+    End Sub
+
     Private Sub WebBrowser1_DocumentCompleted(sender As Object, e As WebBrowserDocumentCompletedEventArgs)
         Try
             If e.Url.AbsolutePath = WebBrowser1.Url.AbsolutePath Then
@@ -1446,23 +1865,7 @@ Public Class Form1
                 Threading.Thread.Sleep(100)
 
                 If WebBrowser1.Document IsNot Nothing Then
-                    ' Inicio del apartado responsive de las pantallas HTML
-                    Try
-                        ' Calculamos cuánto hay que estirar la pantalla a lo ancho y alto basándonos en el 1024x768 original
-                        Dim scaleX As String = (Me.Width / 1024.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        Dim scaleY As String = (Me.Height / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
-
-                        ' Inyectamos el CSS dinámicamente al Body sin modificar los archivos físicos
-                        ' Inyectamos el CSS dinámicamente forzando que no haya márgenes y obligando a adaptar la altura al 100%
-                        Dim cssScale As String = $"; transform: scale({scaleX}, {scaleY}); transform-origin: top left; width: 1024px !important; height: 768px !important; min-height: 768px !important; margin: 0px !important; padding: 0px !important; overflow: hidden !important; background-size: 100% 100% !important; background-repeat: no-repeat !important; background-position: left top !important;"
-                        Dim bodyElement As HtmlElement = WebBrowser1.Document.Body
-                        If bodyElement IsNot Nothing Then
-                            bodyElement.Style = bodyElement.Style & cssScale
-                        End If
-                    Catch ex As Exception
-                        Trace("Error inyectando reescalado HTML: " & ex.Message)
-                    End Try
-                    ' Fin del responsive
+                    AplicarResponsiveHtml()
 
                     Try
                         Dim anyZero As Boolean = AreAnyCassettesEmpty()
@@ -1497,8 +1900,10 @@ Public Class Form1
 
                         If IsPrinterError() Then
                             WebBrowser1.Document.InvokeScript("showErrPrinter")
+                            InvokeScriptOpcional("hideBtnConsultaSaldo")
                         Else
                             WebBrowser1.Document.InvokeScript("hideErrPrinter")
+                            InvokeScriptOpcional("showBtnConsultaSaldo")
                         End If
 
                         If anyZero Then
@@ -1509,7 +1914,7 @@ Public Class Form1
                             WebBrowser1.Document.InvokeScript("showBtnRetiro")
                         End If
                     Catch ex As Exception
-                        Trace("Error invoking cassette script in DocumentCompleted: " & ex.Message)
+                        Trace("Error al ejecutar script de cassettes al cargar documento: " & ex.Message)
                     End Try
 
                     If currentHoleRequired Then
@@ -1522,19 +1927,19 @@ Public Class Form1
                         Try
                             sErrorImpresora = ""
                             If IsPrinterError() Then
-                                Trace("DocumentCompleted menuMore - showErrPrinter")
+                                Trace("MenuMore cargado: mostrando error de impresora")
                                 WebBrowser1.Document.InvokeScript("showErrPrinter")
                             Else
                                 WebBrowser1.Document.InvokeScript("hideErrPrinter")
                             End If
                         Catch ex As Exception
-                            Trace("Error invoking printer script in DocumentCompleted menuMore: " & ex.Message)
+                            Trace("Error al ejecutar script de impresora en menuMore: " & ex.Message)
                         End Try
                     End If
                 End If
             End If
         Catch ex As Exception
-            Trace("Error WebBrowser1_DocumentCompleted: " & ex.Message)
+            Trace("Error al completar carga de documento HTML: " & ex.Message)
         End Try
     End Sub
 
@@ -1646,7 +2051,7 @@ Public Class Form1
 
             Dim fisicoStr As String = ReadIni("CDM CASSETTES STATUS", "cassette" & numeroCasetero & "_status", ConfigManager.workFileDevices).Trim().ToUpper()
 
-            If fisicoStr = "EMPTY" Then
+            If fisicoStr = "EMPTY" OrElse fisicoStr = "MISSING" OrElse fisicoStr = "INOPERABLE" Then
                 Return False
             End If
 
@@ -1661,6 +2066,9 @@ Public Class Form1
         Try
             Trace("Regresando a FastCash manualmente a petición del usuario")
             If urlFastCashGlobal <> "" Then
+                bFaltaBilletesDesdeMenu = False
+                bFastCashWaitActivo = False
+                sFastCashActivo = urlFastCashGlobal
                 currentScreen = urlFastCashGlobal
                 WebBrowser1.Navigate(urlFastCashGlobal)
                 Me.Show()

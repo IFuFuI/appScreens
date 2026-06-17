@@ -12,17 +12,49 @@ Module Module1
     Public isClosePage As Boolean = False
     Public isExpetionClosePageNDC As Boolean = False
 
+    Private Function GetTraceLevelName(level As Integer) As String
+        Select Case level
+            Case 1
+                Return "WARN"
+            Case 2
+                Return "ERROR"
+            Case 3
+                Return "DEBUG"
+            Case Else
+                Return "INFO"
+        End Select
+    End Function
+
+    Private Function SanitizeTraceText(texto As String) As String
+        If texto Is Nothing Then Return ""
+
+        Dim limpio As String = texto
+        limpio = limpio.Replace("APTRA Advance NDC", "NDC")
+        limpio = limpio.Replace("APTRA", "NDC")
+
+        Return limpio
+    End Function
+
     Public Sub Trace(ByVal strTexto As String, Optional ByVal level As Integer = 0)
         Dim sTrace As String = ""
 
         Try
             sTrace = ReadIni("TRACE", "SCREENS", ConfigManager.ConfigFile)
             If sTrace = "TRUE" Then
-                strTexto = Format(Now(), "dd-MM-yyyy HH:mm:ss.fff tt") & "      " & strTexto & vbCrLf
-                File.AppendAllText("C:\appMain\log\" & Format(Now(), "yyyyMMdd") & "_appScreens.log", strTexto)
+                Dim logDir As String = "C:\appMain\log"
+                If Not Directory.Exists(logDir) Then Directory.CreateDirectory(logDir)
+
+                Dim prefix As String = Format(Now(), "dd-MM-yyyy HH:mm:ss.fff tt") &
+                    "      [" & GetTraceLevelName(level) & "] [PID:" & Process.GetCurrentProcess().Id & "] "
+
+                strTexto = prefix & SanitizeTraceText(strTexto) & vbCrLf
+                File.AppendAllText(Path.Combine(logDir, Format(Now(), "yyyyMMdd") & "_appScreens.log"), strTexto)
             End If
         Catch ex As Exception
-            Trace("[Trace] [Error]" + ex.Message)
+            Try
+                File.AppendAllText("C:\appMain\log\trace_error.log", Format(Now(), "dd-MM-yyyy HH:mm:ss.fff tt") & "      [ERROR] " & SanitizeTraceText(ex.Message) & vbCrLf)
+            Catch
+            End Try
         End Try
     End Sub
 
