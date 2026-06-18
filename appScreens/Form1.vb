@@ -84,6 +84,7 @@ Public Class Form1
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim aptraIsOnExceptionScreen As Boolean = False ' Destraba el cajero en fallas de hardware
     Dim keepCustomErrorPageActive As Boolean = False ' Protege las pantallas de error
+    Dim keepCancelPageActive As Boolean = False ' Protege la cancelacion custom hasta regresar a welcome
 
     ' ============== Win32 API para región transparente ==============
     Private Declare Function CreateRectRgn Lib "gdi32" (ByVal X1 As Integer, ByVal Y1 As Integer, ByVal X2 As Integer, ByVal Y2 As Integer) As IntPtr
@@ -1319,6 +1320,15 @@ Public Class Form1
 
         pageException = ""
 
+        If sValue = "welcome" OrElse sValue = "500" OrElse sValue = "hide" Then
+            keepCancelPageActive = False
+        End If
+
+        If keepCancelPageActive AndAlso (sValue = "513" OrElse sValue = "701") Then
+            Trace(sValue & " ignorado para mantener visible la pantalla custom de cancelacion.")
+            Exit Sub
+        End If
+
         ' >>> BARRERA PROTECTORA DE PANTALLA CUSTOM <<<
         If sValue = "welcome" OrElse sValue = "500" OrElse sValue = "701" OrElse sValue = "hide" Then
             keepCustomErrorPageActive = False
@@ -1402,14 +1412,26 @@ Public Class Form1
                 Trace("513 interceptado por error de host; se oculta appScreens para mostrar pantalla nativa")
                 sValue = "hide"
                 isHostError = False
-            ElseIf currentScreen.ToLower().Contains("menu") OrElse
-                   Not Me.Visible OrElse
+            ElseIf currentScreen.ToLower().Contains("menu") Then
+                Dim pageCancel As String = ReadIni("513CANCEL", "PAGE", ConfigManager.ScreensFile).Trim()
+                Dim picCancel As String = ReadIni("513CANCEL", "PIC", ConfigManager.ScreensFile).Trim()
+
+                If pageCancel <> "" OrElse picCancel <> "" Then
+                    Trace("513 desde menu redirigido a pantalla custom 513CANCEL")
+                    sValue = "513CANCEL"
+                    keepCancelPageActive = True
+                    keepCustomErrorPageActive = True
+                Else
+                    Trace("513 desde menu sin 513CANCEL configurado; appScreens permanece oculto")
+                    sValue = "hide"
+                End If
+            ElseIf Not Me.Visible OrElse
                    currentScreen = "pantalla_nativa_pic" OrElse
                    currentScreen = "pantalla_nativa_texto" OrElse
                    currentScreen = "pantalla_nativa_texto_esperando_701" OrElse
                    currentScreen = "" Then
 
-                Trace("513 interceptado por cancelacion/menu/flujo nativo; appScreens permanece oculto")
+                Trace("513 interceptado por cancelacion/flujo nativo; appScreens permanece oculto")
                 sValue = "hide"
             End If
         End If
