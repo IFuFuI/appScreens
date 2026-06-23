@@ -1057,6 +1057,16 @@ Public Class Form1
                 End If
             End If
 
+            If sUrl <> "" AndAlso EsUrlMenuHost(sUrl) AndAlso contenido.Contains("CODIGO RESPUESTA 000") Then
+                If isHostError OrElse isExpetionClosePageNDC OrElse pageException <> "" Then
+                    Trace("Host regreso a menu exitoso; limpiando bandera de error host")
+                End If
+
+                isHostError = False
+                isExpetionClosePageNDC = False
+                pageException = ""
+            End If
+
             If sUrl <> "" Then
                 AplicarDatosNdc(ndc)
             End If
