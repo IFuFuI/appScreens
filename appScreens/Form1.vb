@@ -933,7 +933,7 @@ Public Class Form1
             End If
 
             Dim esLayoutProtegido As Boolean = False
-            If ndc.Layout = "P5280" OrElse ndc.Layout = "P5080" OrElse ndc.Layout = "P3520" OrElse ndc.Layout = "P3530" OrElse ndc.Layout = "P3540" Then
+            If ndc.Layout = "P5280" OrElse ndc.Layout = "P5080" OrElse ndc.Layout = "P3520" OrElse ndc.Layout = "P3530" OrElse ndc.Layout = "P3540" OrElse ndc.Layout = "P6550" OrElse ndc.Layout = "P2655" Then
                 esLayoutProtegido = True
             ElseIf ndc.Layout = "P3570" Then
                 If contenido.Contains("LM") OrElse contenido.Contains("L") OrElse contenido.Contains(Chr(15) & "LM") OrElse contenido.Contains(Chr(15) & "L") Then
