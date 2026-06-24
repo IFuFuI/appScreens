@@ -1755,6 +1755,40 @@ Public Class Form1
         Trace("Cerrando appScreens")
     End Sub
 
+    Private Sub AplicarResponsiveHtml()
+        Try
+            If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then Exit Sub
+
+            Dim viewportWidth As Integer = Math.Max(1, WebBrowser1.ClientSize.Width)
+            Dim viewportHeight As Integer = Math.Max(1, WebBrowser1.ClientSize.Height)
+            Dim scaleX As String = (viewportWidth / 1024.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim scaleY As String = (viewportHeight / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim viewportWidthText As String = viewportWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim viewportHeightText As String = viewportHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)
+
+            Dim script As String =
+                "(function(){" &
+                "var d=document,b=d.body,e=d.documentElement;if(!b||!e){return;}" &
+                "var s=d.getElementById('appScreensResponsiveStyle');" &
+                "if(!s){s=d.createElement('style');s.id='appScreensResponsiveStyle';s.type='text/css';" &
+                "s.styleSheet?s.styleSheet.cssText='html,body{margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important;}body{background-size:100% 100%!important;background-repeat:no-repeat!important;background-position:left top!important;}':s.appendChild(d.createTextNode('html,body{margin:0!important;padding:0!important;overflow:hidden!important;width:100%!important;height:100%!important;}body{background-size:100% 100%!important;background-repeat:no-repeat!important;background-position:left top!important;}'));" &
+                "(d.getElementsByTagName('head')[0]||e).appendChild(s);}" &
+                "e.style.margin='0px';e.style.padding='0px';e.style.width='" & viewportWidthText & "px';e.style.height='" & viewportHeightText & "px';e.style.overflow='hidden';" &
+                "b.style.margin='0px';b.style.padding='0px';b.style.width='" & viewportWidthText & "px';b.style.height='" & viewportHeightText & "px';b.style.minHeight='" & viewportHeightText & "px';b.style.overflow='hidden';" &
+                "b.style.backgroundSize='100% 100%';b.style.backgroundRepeat='no-repeat';b.style.backgroundPosition='left top';" &
+                "var r=d.getElementById('appScreensResponsiveRoot');" &
+                "if(!r){r=d.createElement('div');r.id='appScreensResponsiveRoot';while(b.firstChild){r.appendChild(b.firstChild);}b.appendChild(r);}" &
+                "r.style.position='absolute';r.style.left='0px';r.style.top='0px';r.style.width='1024px';r.style.height='768px';r.style.overflow='hidden';" &
+                "r.style.transformOrigin='top left';r.style.msTransformOrigin='top left';r.style.transform='scale(" & scaleX & "," & scaleY & ")';r.style.msTransform='scale(" & scaleX & "," & scaleY & ")';" &
+                "if(window.scrollTo){window.scrollTo(0,0);}" &
+                "})();"
+
+            WebBrowser1.Document.InvokeScript("eval", New Object() {script})
+        Catch ex As Exception
+            Trace("Error inyectando reescalado HTML: " & ex.Message)
+        End Try
+    End Sub
+
     Private Sub WebBrowser1_DocumentCompleted(sender As Object, e As WebBrowserDocumentCompletedEventArgs)
         Try
             If e.Url.AbsolutePath = WebBrowser1.Url.AbsolutePath Then
@@ -1763,23 +1797,7 @@ Public Class Form1
                 Threading.Thread.Sleep(100)
 
                 If WebBrowser1.Document IsNot Nothing Then
-                    ' Inicio del apartado responsive de las pantallas HTML
-                    Try
-                        ' Calculamos cuánto hay que estirar la pantalla a lo ancho y alto basándonos en el 1024x768 original
-                        Dim scaleX As String = (Me.Width / 1024.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        Dim scaleY As String = (Me.Height / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
-
-                        ' Inyectamos el CSS dinámicamente al Body sin modificar los archivos físicos
-                        ' Inyectamos el CSS dinámicamente forzando que no haya márgenes y obligando a adaptar la altura al 100%
-                        Dim cssScale As String = $"; transform: scale({scaleX}, {scaleY}); transform-origin: top left; width: 1024px !important; height: 768px !important; min-height: 768px !important; margin: 0px !important; padding: 0px !important; overflow: hidden !important; background-size: 100% 100% !important; background-repeat: no-repeat !important; background-position: left top !important;"
-                        Dim bodyElement As HtmlElement = WebBrowser1.Document.Body
-                        If bodyElement IsNot Nothing Then
-                            bodyElement.Style = bodyElement.Style & cssScale
-                        End If
-                    Catch ex As Exception
-                        Trace("Error inyectando reescalado HTML: " & ex.Message)
-                    End Try
-                    ' Fin del responsive
+                    AplicarResponsiveHtml()
 
                     Try
                         Dim anyZero As Boolean = AreAnyCassettesEmpty()
