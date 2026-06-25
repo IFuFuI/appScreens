@@ -520,6 +520,7 @@ Public Class Form1
                             Trace("sDataEnable: " + sDataEnable)
                             ' Si estamos en LenguajeSelector (Screen 150), ocultar appscreens inmediatamente
                             If sCurrent = "150" Then
+                                ForzarEspanolSiSelectorIdiomaPendiente()
                                 ocultarPantalla()
                             ElseIf sDataEnable = "PIN" Then
                                 WebBrowser1.Document.InvokeScript("recibeData")
@@ -1669,7 +1670,51 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Function EsSelectorIdiomaActivo() As Boolean
+        Try
+            If sCurrent = "150" Then Return True
+
+            If currentScreen IsNot Nothing AndAlso currentScreen.ToLower().Contains("lenguajeselector") Then
+                Return True
+            End If
+
+            If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing AndAlso
+               WebBrowser1.Url.LocalPath.ToLower().Contains("lenguajeselector") Then
+                Return True
+            End If
+        Catch ex As Exception
+        End Try
+
+        Return False
+    End Function
+
+    Private Sub ForzarEspanolSiSelectorIdiomaPendiente()
+        Try
+            If Not EsSelectorIdiomaActivo() Then Exit Sub
+
+            Dim idiomaActual As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile).Trim().ToUpper()
+            If idiomaActual = "I" OrElse idiomaActual = "M" Then Exit Sub
+
+            Trace("Selector de idioma cerrado sin idioma seleccionado; aplicando Espanol por default.")
+            GuardarIdiomaSeleccionado("")
+
+            Try
+                If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
+                    Dim script As String =
+                        "try{if(window.localStorage){localStorage.setItem('idiomaATM','ES');localStorage.setItem('idiomaATMSeleccionado','1');}" &
+                        "if(window.sessionStorage){sessionStorage.setItem('idiomaATM','ES');sessionStorage.setItem('idiomaATMSeleccionado','1');}" &
+                        "document.cookie='idiomaATM=ES; path=/';document.cookie='idiomaATMSeleccionado=1; path=/';}catch(ex){}"
+                    WebBrowser1.Document.InvokeScript("eval", New Object() {script})
+                End If
+            Catch ex As Exception
+            End Try
+        Catch ex As Exception
+            Trace("Error aplicando Espanol por default en selector de idioma: " & ex.Message)
+        End Try
+    End Sub
+
     Public Sub ocultarPantalla()
+        ForzarEspanolSiSelectorIdiomaPendiente()
         Trace("Ocultando appScreens")
         tmMsgDevices.Enabled = False
         Me.Hide()
