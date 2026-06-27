@@ -67,6 +67,14 @@ Public Class Form1
     Dim sLastMenuUrl As String = ""
     Dim sMenuActivo As String = ""
 
+    Dim webBrowserWaitRegreso As WebBrowser = Nothing
+    Dim waitRegresoCargado As Boolean = False
+    Dim waitRegresoActivo As Boolean = False
+    Dim regresoNativo024Activo As Boolean = False
+    Dim regresoMenuMorePendiente As Boolean = False
+    Dim timerOcultarWaitRegreso As Timer = Nothing
+    Dim toqueRegresoNativoDetectado As Boolean = False
+
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
     Dim advertenciaMostrada As Boolean = False
@@ -93,6 +101,45 @@ Public Class Form1
     Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As IntPtr) As Boolean
     Private Const RGN_DIFF As Integer = 4
     Private transparentRegionApplied As Boolean = False
+
+    Private Const WH_MOUSE_LL As Integer = 14
+    Private Const WM_LBUTTONUP As Integer = &H202
+
+    Private Delegate Function LowLevelMouseProc(nCode As Integer, wParam As IntPtr, lParam As IntPtr) As IntPtr
+
+    <System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)>
+    Private Structure MousePoint
+        Public X As Integer
+        Public Y As Integer
+    End Structure
+
+    <System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)>
+    Private Structure MouseHookData
+        Public Point As MousePoint
+        Public MouseData As UInteger
+        Public Flags As UInteger
+        Public Time As UInteger
+        Public ExtraInfo As UIntPtr
+    End Structure
+
+    <System.Runtime.InteropServices.DllImport("user32.dll", SetLastError:=True)>
+    Private Shared Function SetWindowsHookEx(idHook As Integer, callback As LowLevelMouseProc, moduleHandle As IntPtr, threadId As UInteger) As IntPtr
+    End Function
+
+    <System.Runtime.InteropServices.DllImport("user32.dll", SetLastError:=True)>
+    Private Shared Function UnhookWindowsHookEx(hookHandle As IntPtr) As Boolean
+    End Function
+
+    <System.Runtime.InteropServices.DllImport("user32.dll")>
+    Private Shared Function CallNextHookEx(hookHandle As IntPtr, nCode As Integer, wParam As IntPtr, lParam As IntPtr) As IntPtr
+    End Function
+
+    <System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet:=System.Runtime.InteropServices.CharSet.Auto, SetLastError:=True)>
+    Private Shared Function GetModuleHandle(moduleName As String) As IntPtr
+    End Function
+
+    Private mouseHookHandle As IntPtr = IntPtr.Zero
+    Private mouseHookCallback As LowLevelMouseProc = Nothing
 
     ' Variables para almacenar la configuración del INI justo antes de navegar
     Dim currentHoleRequired As Boolean = False
@@ -142,6 +189,8 @@ Public Class Form1
             SetBrowserFeatureControl()
 
             AddHandler WebBrowser1.DocumentCompleted, AddressOf WebBrowser1_DocumentCompleted
+            InicializarWaitRegreso()
+            InstalarDetectorToqueRegreso()
         Catch ex As Exception
             Trace("Error al inicializar navegador local")
         End Try
@@ -149,6 +198,96 @@ Public Class Form1
         tmInterfasSuper.Enabled = True
         LimpiarMensajesObsoletosInicio()
         Me.Hide()
+    End Sub
+
+    Private Sub InstalarDetectorToqueRegreso()
+        Try
+            If mouseHookHandle <> IntPtr.Zero Then Exit Sub
+
+            mouseHookCallback = AddressOf ProcesarToqueGlobal
+            mouseHookHandle = SetWindowsHookEx(WH_MOUSE_LL, mouseHookCallback, GetModuleHandle(Nothing), 0)
+
+            If mouseHookHandle = IntPtr.Zero Then
+                Trace("No se pudo instalar detector de toque regreso. Win32=" &
+                      System.Runtime.InteropServices.Marshal.GetLastWin32Error().ToString())
+            Else
+                Trace("Detector de toque regreso instalado")
+            End If
+        Catch ex As Exception
+            Trace("Error instalando detector de toque regreso: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub DesinstalarDetectorToqueRegreso()
+        Try
+            If mouseHookHandle <> IntPtr.Zero Then
+                UnhookWindowsHookEx(mouseHookHandle)
+                mouseHookHandle = IntPtr.Zero
+            End If
+        Catch ex As Exception
+            Trace("Error desinstalando detector de toque regreso: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function EsToqueDeRegresoNativo(x As Integer, y As Integer) As Boolean
+        Dim fdkBackNativo As Integer = 4
+        Dim valorFdk As String = ReadIni("024", "BACKFDK", ConfigManager.ScreensFile).Trim()
+
+        If valorFdk = "" Then
+            valorFdk = ReadIni("PARAM", "NATIVE_BACK_FDK", ConfigManager.ScreensFile).Trim()
+        End If
+
+        If valorFdk <> "" Then Integer.TryParse(valorFdk, fdkBackNativo)
+        If fdkBackNativo < 1 OrElse fdkBackNativo > 8 Then fdkBackNativo = 4
+
+        Dim xReferencia As Integer = If(fdkBackNativo <= 4, 177, 850)
+        Dim posicionesY() As Integer = {296, 440, 574, 713}
+        Dim yReferencia As Integer = posicionesY((fdkBackNativo - 1) Mod 4)
+        Dim pantalla As Rectangle = Screen.PrimaryScreen.Bounds
+        Dim escalaX As Double = pantalla.Width / 1024.0
+        Dim escalaY As Double = pantalla.Height / 768.0
+        Dim centroX As Integer = pantalla.Left + CInt(xReferencia * escalaX)
+        Dim centroY As Integer = pantalla.Top + CInt(yReferencia * escalaY)
+        Dim toleranciaX As Integer = Math.Max(120, CInt(200 * escalaX))
+        Dim toleranciaY As Integer = Math.Max(55, CInt(85 * escalaY))
+
+        Return Math.Abs(x - centroX) <= toleranciaX AndAlso
+               Math.Abs(y - centroY) <= toleranciaY
+    End Function
+
+    Private Function ProcesarToqueGlobal(nCode As Integer, wParam As IntPtr, lParam As IntPtr) As IntPtr
+        Try
+            If nCode >= 0 AndAlso wParam.ToInt32() = WM_LBUTTONUP AndAlso
+               regresoNativo024Activo AndAlso Not toqueRegresoNativoDetectado Then
+
+                Dim datos As MouseHookData = DirectCast(
+                    System.Runtime.InteropServices.Marshal.PtrToStructure(lParam, GetType(MouseHookData)),
+                    MouseHookData)
+                Dim esRegreso As Boolean = EsToqueDeRegresoNativo(datos.Point.X, datos.Point.Y)
+
+                Trace("Toque durante 024: x=" & datos.Point.X & " y=" & datos.Point.Y &
+                      " regreso=" & esRegreso.ToString())
+
+                If esRegreso Then
+                    toqueRegresoNativoDetectado = True
+                    Trace("Regreso nativo detectado antes de 701; mostrando wait")
+
+                    If Me.InvokeRequired Then
+                        Me.BeginInvoke(New MethodInvoker(AddressOf MostrarWaitRegresoDesdeToque))
+                    Else
+                        MostrarWaitRegresoDesdeToque()
+                    End If
+                End If
+            End If
+        Catch ex As Exception
+            Trace("Error procesando toque nativo: " & ex.Message)
+        End Try
+
+        Return CallNextHookEx(mouseHookHandle, nCode, wParam, lParam)
+    End Function
+
+    Private Sub MostrarWaitRegresoDesdeToque()
+        MostrarWaitRegreso()
     End Sub
 
 
@@ -166,6 +305,162 @@ Public Class Form1
 
             Return cs.Contains("\menu") OrElse cs.Contains("/menu")
         Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Sub InicializarWaitRegreso()
+        Try
+            If webBrowserWaitRegreso IsNot Nothing Then Exit Sub
+
+            Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile).Trim()
+            If sWaitUrl = "" Then
+                Trace("No se pudo precargar wait de regreso: estado 300 sin PAGE")
+                Exit Sub
+            End If
+
+            webBrowserWaitRegreso = New WebBrowser()
+            webBrowserWaitRegreso.Dock = DockStyle.Fill
+            webBrowserWaitRegreso.ScrollBarsEnabled = False
+            webBrowserWaitRegreso.ScriptErrorsSuppressed = True
+            webBrowserWaitRegreso.AllowWebBrowserDrop = False
+            webBrowserWaitRegreso.IsWebBrowserContextMenuEnabled = False
+            webBrowserWaitRegreso.WebBrowserShortcutsEnabled = False
+            webBrowserWaitRegreso.ObjectForScripting = Me
+            webBrowserWaitRegreso.Visible = False
+
+            Me.Controls.Add(webBrowserWaitRegreso)
+            webBrowserWaitRegreso.BringToFront()
+            AddHandler webBrowserWaitRegreso.DocumentCompleted, AddressOf WebBrowserWaitRegreso_DocumentCompleted
+
+            timerOcultarWaitRegreso = New Timer()
+            timerOcultarWaitRegreso.Interval = 350
+            AddHandler timerOcultarWaitRegreso.Tick, AddressOf TimerOcultarWaitRegreso_Tick
+
+            webBrowserWaitRegreso.Navigate(sWaitUrl)
+            Trace("Precargando wait de regreso: " & sWaitUrl)
+        Catch ex As Exception
+            Trace("Error inicializando wait de regreso: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub PrepararWaitRegreso()
+        Try
+            If webBrowserWaitRegreso Is Nothing Then
+                InicializarWaitRegreso()
+            End If
+
+            If webBrowserWaitRegreso Is Nothing OrElse waitRegresoCargado Then Exit Sub
+
+            Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile).Trim()
+            If sWaitUrl <> "" Then
+                webBrowserWaitRegreso.Navigate(sWaitUrl)
+            End If
+        Catch ex As Exception
+            Trace("Error preparando wait de regreso: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub DejarWaitComoPrimeraCapaOculta()
+        Try
+            PrepararWaitRegreso()
+
+            If webBrowserWaitRegreso Is Nothing OrElse Not waitRegresoCargado Then Exit Sub
+
+            If timerOcultarWaitRegreso IsNot Nothing Then timerOcultarWaitRegreso.Stop()
+
+            RestoreFullRegion()
+            WebBrowser1.Visible = False
+            webBrowserWaitRegreso.Visible = True
+            webBrowserWaitRegreso.BringToFront()
+            Trace("024: formulario oculto preparado para abrir directamente con wait.html")
+        Catch ex As Exception
+            Trace("Error preparando primera capa de wait: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function MostrarWaitRegreso() As Boolean
+        Try
+            PrepararWaitRegreso()
+
+            If webBrowserWaitRegreso Is Nothing OrElse Not waitRegresoCargado Then
+                Trace("Wait de regreso aun no esta cargado; se conserva el HTML actual")
+                Return False
+            End If
+
+            If timerOcultarWaitRegreso IsNot Nothing Then timerOcultarWaitRegreso.Stop()
+
+            RestoreFullRegion()
+            waitRegresoActivo = True
+            WebBrowser1.Visible = False
+            webBrowserWaitRegreso.Visible = True
+            webBrowserWaitRegreso.BringToFront()
+            Me.Show()
+            Me.BringToFront()
+            Me.Update()
+            Trace("701: appScreens en Show con wait.html precargado")
+            Return True
+        Catch ex As Exception
+            Trace("Error mostrando wait de regreso: " & ex.Message)
+            Return False
+        End Try
+    End Function
+
+    Private Sub ProgramarOcultarWaitRegreso()
+        If Not waitRegresoActivo OrElse timerOcultarWaitRegreso Is Nothing Then Exit Sub
+
+        timerOcultarWaitRegreso.Stop()
+        timerOcultarWaitRegreso.Start()
+    End Sub
+
+    Private Sub OcultarWaitRegreso()
+        If timerOcultarWaitRegreso IsNot Nothing Then timerOcultarWaitRegreso.Stop()
+        If WebBrowser1 IsNot Nothing Then
+            WebBrowser1.Visible = True
+            WebBrowser1.Update()
+        End If
+        If webBrowserWaitRegreso IsNot Nothing Then webBrowserWaitRegreso.Visible = False
+        If WebBrowser1 IsNot Nothing Then WebBrowser1.BringToFront()
+        waitRegresoActivo = False
+    End Sub
+
+    Private Sub TimerOcultarWaitRegreso_Tick(sender As Object, e As EventArgs)
+        OcultarWaitRegreso()
+        Trace("Wait de regreso retirado; menu HTML ya estaba listo")
+    End Sub
+
+    Private Sub WebBrowserWaitRegreso_DocumentCompleted(sender As Object, e As WebBrowserDocumentCompletedEventArgs)
+        Try
+            If webBrowserWaitRegreso IsNot Nothing AndAlso webBrowserWaitRegreso.Url IsNot Nothing AndAlso
+               e.Url.AbsolutePath = webBrowserWaitRegreso.Url.AbsolutePath Then
+                waitRegresoCargado = True
+                Trace("wait.html de regreso precargado")
+            End If
+        Catch ex As Exception
+            Trace("Error al completar wait de regreso: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function WebBrowserTienePaginaCargada(sUrl As String) As Boolean
+        Try
+            If WebBrowser1 Is Nothing OrElse WebBrowser1.Url Is Nothing OrElse sUrl.Trim() = "" Then
+                Return False
+            End If
+
+            Dim rutaActual As String = WebBrowser1.Url.LocalPath
+            Dim rutaDestino As String = sUrl.Trim()
+            Dim uriDestino As Uri = Nothing
+
+            If Uri.TryCreate(rutaDestino, UriKind.Absolute, uriDestino) AndAlso uriDestino.IsFile Then
+                rutaDestino = uriDestino.LocalPath
+            End If
+
+            rutaActual = IO.Path.GetFullPath(rutaActual)
+            rutaDestino = IO.Path.GetFullPath(rutaDestino)
+
+            Return String.Equals(rutaActual, rutaDestino, StringComparison.OrdinalIgnoreCase)
+        Catch ex As Exception
+            Trace("Error comparando pagina cargada: " & ex.Message)
             Return False
         End Try
     End Function
@@ -655,6 +950,10 @@ Public Class Form1
     End Function
 
     Public Sub clickPage(sPotition As String)
+        Dim esRegresoMenuMore As Boolean =
+            sPotition = "4" AndAlso
+            currentScreen.ToLower().Contains("menumore")
+
         Try
             dllInterfaceNdc.showScreenNDC(300)
         Catch ex As Exception
@@ -697,7 +996,7 @@ Public Class Form1
             WebBrowser1.Navigate(currentScreen)
             Me.Show()
 
-        ElseIf esBack Then
+        ElseIf esBack AndAlso Not esRegresoMenuMore Then
             fdkBack = ""
             Trace("Ejectua back FDK.. navega a lastScreen: " + lastUrl)
             WebBrowser1.Navigate(lastUrl)
@@ -716,6 +1015,13 @@ Public Class Form1
                 Case "7" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 574)
                 Case "8" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 713)
             End Select
+
+            If esRegresoMenuMore Then
+                regresoMenuMorePendiente = True
+                Timer1.Interval = 30
+                MostrarWaitRegreso()
+                Trace("Regreso desde menuMore: wait mostrado inmediatamente despues de enviar FDK4")
+            End If
         End If
     End Sub
 
@@ -1284,6 +1590,33 @@ Public Class Form1
         Dim sDataEnable As String = String.Empty
         Dim sIdioma As String
 
+        If sValue = "024" Then
+            regresoNativo024Activo = EsMenuHtmlActual()
+            toqueRegresoNativoDetectado = False
+
+            If regresoNativo024Activo Then
+                PrepararWaitRegreso()
+                Timer1.Interval = 30
+                Trace("024 desde menu: wait preparado y polling de regreso a 30ms")
+            End If
+        ElseIf sValue = "701" Then
+            Timer1.Interval = 300
+
+            If (regresoNativo024Activo OrElse regresoMenuMorePendiente) AndAlso Not waitRegresoActivo Then
+                MostrarWaitRegreso()
+            End If
+
+            regresoNativo024Activo = False
+            regresoMenuMorePendiente = False
+            toqueRegresoNativoDetectado = False
+        ElseIf sValue = "500" OrElse sValue = "welcome" OrElse sValue = "513" Then
+            regresoNativo024Activo = False
+            regresoMenuMorePendiente = False
+            toqueRegresoNativoDetectado = False
+            Timer1.Interval = 300
+            OcultarWaitRegreso()
+        End If
+
         If sValue = "850" AndAlso sExp850OriginalUrl <> "" Then
             Trace("850 ignorado: exp-850 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
@@ -1528,8 +1861,13 @@ Public Class Form1
 
                 Trace("Navega page Url: " + sUrlFinal)
                 bNDCPageActive = False
-                WebBrowser1.Navigate(sUrlFinal)
-                Me.Show()
+
+                If sValue = "701" AndAlso WebBrowserTienePaginaCargada(sUrlFinal) Then
+                    Trace("701: reutilizando menu HTML ya renderizado, sin recargar WebBrowser")
+                    ProgramarOcultarWaitRegreso()
+                Else
+                    WebBrowser1.Navigate(sUrlFinal)
+                End If
             Else
                 sImagen = ReadIni(sValue, "PIC", ConfigManager.ScreensFile)
 
@@ -1573,6 +1911,11 @@ Public Class Form1
         Trace("Ocultando appScreens")
         tmMsgDevices.Enabled = False
         Me.Hide()
+
+        If regresoNativo024Activo Then
+            DejarWaitComoPrimeraCapaOculta()
+        End If
+
         sCurrent = ""
         sCurrentData = ""
     End Sub
@@ -1752,6 +2095,7 @@ Public Class Form1
     End Sub
 
     Private Sub Form1_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
+        DesinstalarDetectorToqueRegreso()
         Trace("Cerrando appScreens")
     End Sub
 
@@ -1846,6 +2190,11 @@ Public Class Form1
                         Catch ex As Exception
                             Trace("Error al ejecutar script de impresora en menuMore: " & ex.Message)
                         End Try
+                    End If
+
+                    If waitRegresoActivo Then
+                        OcultarWaitRegreso()
+                        Trace("Wait de regreso retirado despues de cargar el menu HTML")
                     End If
                 End If
             End If
