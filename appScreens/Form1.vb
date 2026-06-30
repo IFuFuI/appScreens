@@ -77,7 +77,12 @@ Public Class Form1
 
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
-    Dim advertenciaMostrada As Boolean = False
+    Dim advertenciaHardwareMostrada As Boolean = False
+    Dim advertenciaDenominacionMostrada As Boolean = False
+    Dim transicionMenuNdcPendiente As Boolean = False
+    Dim transicionRetiroFastCashPendiente As Boolean = False
+    Dim timer701TransicionMenu As Timer = Nothing
+    Dim navegacionFastCashCubierta As Boolean = False
     Dim timeoutCount As Integer = 0
 
     ' Variables para la lógica dinámica de FastCash y Denominaciones <<<
@@ -243,7 +248,10 @@ Public Class Form1
         Dim xReferencia As Integer = If(fdkBackNativo <= 4, 177, 850)
         Dim posicionesY() As Integer = {296, 440, 574, 713}
         Dim yReferencia As Integer = posicionesY((fdkBackNativo - 1) Mod 4)
-        Dim pantalla As Rectangle = Screen.PrimaryScreen.Bounds
+        Dim pantalla As Rectangle = ClickEnVentana.ObtenerRectanguloVentana(screenEventTo)
+        If pantalla.IsEmpty Then
+            pantalla = Screen.FromHandle(Me.Handle).Bounds
+        End If
         Dim escalaX As Double = pantalla.Width / 1024.0
         Dim escalaY As Double = pantalla.Height / 768.0
         Dim centroX As Integer = pantalla.Left + CInt(xReferencia * escalaX)
@@ -398,7 +406,7 @@ Public Class Form1
             Me.Show()
             Me.BringToFront()
             Me.Update()
-            Trace("701: appScreens en Show con wait.html precargado")
+            Trace("appScreens en Show con wait.html precargado")
             Return True
         Catch ex As Exception
             Trace("Error mostrando wait de regreso: " & ex.Message)
@@ -433,6 +441,7 @@ Public Class Form1
         Try
             If webBrowserWaitRegreso IsNot Nothing AndAlso webBrowserWaitRegreso.Url IsNot Nothing AndAlso
                e.Url.AbsolutePath = webBrowserWaitRegreso.Url.AbsolutePath Then
+                AplicarResponsiveHtml(webBrowserWaitRegreso)
                 waitRegresoCargado = True
                 Trace("wait.html de regreso precargado")
             End If
@@ -465,12 +474,79 @@ Public Class Form1
         End Try
     End Function
 
+    Private Sub IniciarTransicionMenuNdc()
+        transicionMenuNdcPendiente = True
+
+        If timer701TransicionMenu IsNot Nothing Then
+            timer701TransicionMenu.Stop()
+        End If
+
+        Trace("Transicion menu/NDC iniciada; los 701 prematuros se diferiran")
+    End Sub
+
+    Private Sub Posponer701TransicionMenu()
+        If timer701TransicionMenu Is Nothing Then
+            timer701TransicionMenu = New Timer()
+            AddHandler timer701TransicionMenu.Tick, AddressOf Timer701TransicionMenu_Tick
+        End If
+
+        timer701TransicionMenu.Interval = If(transicionRetiroFastCashPendiente, 8000, 500)
+
+        If Not timer701TransicionMenu.Enabled Then
+            timer701TransicionMenu.Start()
+        End If
+
+        Trace("701 diferido " & timer701TransicionMenu.Interval &
+              " ms mientras se espera la pantalla NDC final")
+    End Sub
+
+    Private Sub CompletarTransicionMenuNdc()
+        If timer701TransicionMenu IsNot Nothing Then
+            timer701TransicionMenu.Stop()
+        End If
+
+        If transicionMenuNdcPendiente Then
+            Trace("Respuesta NDC recibida; se descarta el 701 intermedio")
+        End If
+
+        transicionMenuNdcPendiente = False
+        transicionRetiroFastCashPendiente = False
+    End Sub
+
+    Private Sub Timer701TransicionMenu_Tick(sender As Object, e As EventArgs)
+        timer701TransicionMenu.Stop()
+
+        If Not transicionMenuNdcPendiente Then Exit Sub
+
+        transicionMenuNdcPendiente = False
+        transicionRetiroFastCashPendiente = False
+        Trace("No llego una pantalla NDC durante la espera; procesando 701 diferido")
+        ProcesarPantalla("701")
+    End Sub
+
     Private Function EsUrlFastCash(url As String) As Boolean
         Dim u As String = If(url, "").Trim().ToLower()
         Return u.EndsWith("\fastcash.html") OrElse
                u.EndsWith("/fastcash.html") OrElse
                u.EndsWith("\fastcash2.html") OrElse
                u.EndsWith("/fastcash2.html")
+    End Function
+
+    Private Function EsRetiroEfectivoFdk7Actual(sPosicion As String) As Boolean
+        Try
+            If sPosicion <> "7" OrElse WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
+                Return False
+            End If
+
+            Dim botonRetiro As HtmlElement = WebBrowser1.Document.GetElementById("btnContinuar2")
+            If botonRetiro Is Nothing Then Return False
+
+            Dim src As String = If(botonRetiro.GetAttribute("src"), "").ToLower()
+            Return src.Contains("retiro") OrElse src.Contains("1-19")
+        Catch ex As Exception
+            Trace("Error identificando boton de retiro FDK7: " & ex.Message)
+            Return False
+        End Try
     End Function
 
     Private Function EsUrlFaltaBilletesDinamico(url As String) As Boolean
@@ -953,6 +1029,7 @@ Public Class Form1
         Dim esRegresoMenuMore As Boolean =
             sPotition = "4" AndAlso
             currentScreen.ToLower().Contains("menumore")
+        Dim esInicioRetiroFastCash As Boolean = EsRetiroEfectivoFdk7Actual(sPotition)
 
         Try
             dllInterfaceNdc.showScreenNDC(300)
@@ -965,13 +1042,18 @@ Public Class Form1
 
         Dim esExcepcion As Boolean = (pageException <> "" AndAlso pageException = sPotition)
         Dim esBack As Boolean = (fdkBack <> "" AndAlso fdkBack = sPotition)
+        Dim urlRetornoExcepcion As String = currentScreen
+
+        If esExcepcion AndAlso sMenuActivo <> "" Then
+            urlRetornoExcepcion = sMenuActivo
+        End If
 
         If esExcepcion Then
             pageException = ""
             sExp850OriginalUrl = ""
             sExp852OriginalUrl = ""
             bNDCPageActive = False
-            Trace("Ejectua excepción FDK.. navega a currentScreen: " + currentScreen)
+            Trace("Ejectua excepción FDK.. navega a menu guardado: " + urlRetornoExcepcion)
 
             If aptraIsOnExceptionScreen Then
                 Trace("Enviando click para destrabar pantalla 850/851/852 nativa.")
@@ -993,8 +1075,13 @@ Public Class Form1
                 Trace("No se reportó pantalla de excepción nativa, es un error local, no enviamos clic físico.")
             End If
 
-            WebBrowser1.Navigate(currentScreen)
-            Me.Show()
+            If urlRetornoExcepcion <> "" Then
+                currentScreen = urlRetornoExcepcion
+                WebBrowser1.Navigate(urlRetornoExcepcion)
+                Me.Show()
+            Else
+                Trace("Excepcion FDK sin pagina de retorno; appScreens permanece oculto")
+            End If
 
         ElseIf esBack AndAlso Not esRegresoMenuMore Then
             fdkBack = ""
@@ -1015,6 +1102,13 @@ Public Class Form1
                 Case "7" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 574)
                 Case "8" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 713)
             End Select
+
+            If esInicioRetiroFastCash Then
+                transicionRetiroFastCashPendiente = True
+                IniciarTransicionMenuNdc()
+                MostrarWaitRegreso()
+                Trace("Retiro desde menu: wait visible hasta recibir FastCash final")
+            End If
 
             If esRegresoMenuMore Then
                 regresoMenuMorePendiente = True
@@ -1391,6 +1485,8 @@ Public Class Form1
         End If
 
         If sUrl <> "" Then
+            CompletarTransicionMenuNdc()
+
             Dim sUrlLower As String = sUrl.ToLower()
             Dim esPaginaMenu As Boolean = sUrlLower.Contains("menu") AndAlso Not sUrlLower.Contains("menumore")
             Dim esFastCash As Boolean = EsUrlFastCash(sUrl)
@@ -1412,9 +1508,19 @@ Public Class Form1
 
             Dim esImpresionPrematura As Boolean = esPaginaMenu AndAlso esMensajeConTicket
 
+            If esFastCash Then
+                If waitRegresoActivo Then
+                    navegacionFastCashCubierta = True
+                Else
+                    navegacionFastCashCubierta = MostrarWaitRegreso()
+                End If
+            End If
+
             ' Si es una impresión prematura, NO mostramos la pantalla aún
             If Not isExpetionClosePageNDC AndAlso Not esImpresionPrematura Then
-                Me.Show()
+                If Not esFastCash OrElse Not navegacionFastCashCubierta Then
+                    Me.Show()
+                End If
             End If
 
             Trace("Mostrando pantalla HTML por mensaje NDC")
@@ -1449,7 +1555,7 @@ Public Class Form1
             End If
 
             ' Agregamos la condición para que no dispare alertas si está imprimiendo
-            If (esPaginaMenu OrElse esFastCash) AndAlso Not advertenciaMostrada AndAlso Not esImpresionPrematura Then
+            If (esPaginaMenu OrElse esFastCash) AndAlso Not esImpresionPrematura Then
                 Dim fallaDispensador As Boolean = AreAnyCassettesEmpty() OrElse IsCdmError()
                 Dim fallaImpresora As Boolean = IsPrinterError()
 
@@ -1459,9 +1565,14 @@ Public Class Form1
                 Dim c4 As Boolean = TieneBilletes("4")
                 Dim faltaAlgunaDenominacion As Boolean = (Not c1 OrElse Not c2 OrElse Not c3 OrElse Not c4) AndAlso Not fallaDispensador
 
-                If fallaDispensador AndAlso fallaImpresora Then
+                If (fallaDispensador OrElse fallaImpresora) AndAlso
+                   Not advertenciaHardwareMostrada Then
+                    MostrarWaitRegreso()
+                End If
+
+                If fallaDispensador AndAlso fallaImpresora AndAlso Not advertenciaHardwareMostrada Then
                     Trace("Falla de efectivo e impresora detectada; mostrando exp-851")
-                    advertenciaMostrada = True
+                    advertenciaHardwareMostrada = True
                     sExp852OriginalUrl = sUrl
                     sExp850OriginalUrl = ""
                     currentScreen = sUrl
@@ -1471,9 +1582,9 @@ Public Class Form1
                     Dim sUrlBase As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
                     sUrl = sUrlBase & "exp-851.html"
                     currentHoleRequired = False
-                ElseIf fallaDispensador Then
+                ElseIf fallaDispensador AndAlso Not advertenciaHardwareMostrada Then
                     Trace("Falla de efectivo/dispensador detectada; mostrando exp-852")
-                    advertenciaMostrada = True
+                    advertenciaHardwareMostrada = True
                     sExp852OriginalUrl = sUrl
                     sExp850OriginalUrl = ""
                     currentScreen = sUrl
@@ -1483,9 +1594,9 @@ Public Class Form1
                     Dim sUrlBase As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
                     sUrl = sUrlBase & "exp-852.html"
                     currentHoleRequired = False
-                ElseIf fallaImpresora Then
+                ElseIf fallaImpresora AndAlso Not advertenciaHardwareMostrada Then
                     Trace("Falla de impresora detectada; mostrando exp-850")
-                    advertenciaMostrada = True
+                    advertenciaHardwareMostrada = True
                     sExp850OriginalUrl = sUrl
                     sExp852OriginalUrl = ""
                     currentScreen = sUrl
@@ -1495,14 +1606,17 @@ Public Class Form1
                     Dim sUrlBase850 As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
                     sUrl = sUrlBase850 & "exp-850.html"
                     currentHoleRequired = False
-                ElseIf faltaAlgunaDenominacion AndAlso esFastCash Then
+                ElseIf fallaDispensador OrElse fallaImpresora Then
+                    Trace("Advertencia 850/851/852 omitida: ya fue mostrada en esta sesion")
+                ElseIf faltaAlgunaDenominacion AndAlso esFastCash AndAlso
+                       Not advertenciaDenominacionMostrada Then
                     CalcularValoresDinamicos()
                     bFaltaBilletesDesdeMenu = True
                     bFastCashWaitActivo = False
                     Dim pantallaFalta As String = "746"
                     Trace("Falta denominación detectada PROACTIVAMENTE en FastCash. Múltiplos: " & globalMultiplosDin & " Max: " & globalMontoMaximoDin)
 
-                    advertenciaMostrada = True
+                    advertenciaDenominacionMostrada = True
                     sExp852OriginalUrl = ""
                     sExp850OriginalUrl = ""
                     currentScreen = sUrl
@@ -1552,6 +1666,17 @@ Public Class Form1
                 bNDCPageActive = False
             Else
                 Trace("Navega page Url DatosNDC: " + sUrl)
+
+                If EsUrlFastCash(sUrl) Then
+                    If waitRegresoActivo Then
+                        navegacionFastCashCubierta = True
+                    Else
+                        navegacionFastCashCubierta = MostrarWaitRegreso()
+                    End If
+                Else
+                    navegacionFastCashCubierta = False
+                End If
+
                 WebBrowser1.Navigate(sUrl)
             End If
 
@@ -1590,6 +1715,20 @@ Public Class Form1
         Dim sDataEnable As String = String.Empty
         Dim sIdioma As String
 
+        If sValue = "300" Then
+            If EsMenuHtmlActual() Then
+                IniciarTransicionMenuNdc()
+            End If
+
+            MostrarWaitRegreso()
+        ElseIf sValue = "701" AndAlso transicionMenuNdcPendiente Then
+            Posponer701TransicionMenu()
+            Exit Sub
+        ElseIf sValue = "500" OrElse sValue = "welcome" OrElse
+               sValue = "513" OrElse sValue = "hide" Then
+            CompletarTransicionMenuNdc()
+        End If
+
         If sValue = "024" Then
             regresoNativo024Activo = EsMenuHtmlActual()
             toqueRegresoNativoDetectado = False
@@ -1615,6 +1754,18 @@ Public Class Form1
             toqueRegresoNativoDetectado = False
             Timer1.Interval = 300
             OcultarWaitRegreso()
+        End If
+
+        Dim esEstadoAdvertenciaHardware As Boolean =
+            sValue = "850" OrElse sValue = "851" OrElse sValue = "852"
+
+        If esEstadoAdvertenciaHardware AndAlso pageException <> "" AndAlso
+           WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing AndAlso
+           WebBrowser1.Url.LocalPath.ToLower().Contains("exp-85") Then
+            Trace("Estado " & sValue & " ignorado: el HTML de excepcion ya esta visible")
+            isExpetionClosePageNDC = False
+            aptraIsOnExceptionScreen = True
+            Exit Sub
         End If
 
         If sValue = "850" AndAlso sExp850OriginalUrl <> "" Then
@@ -1646,6 +1797,45 @@ Public Class Form1
             isExpetionClosePageNDC = False
             aptraIsOnExceptionScreen = True
             Exit Sub
+        End If
+
+        If esEstadoAdvertenciaHardware Then
+            If advertenciaHardwareMostrada Then
+                Trace("Estado " & sValue &
+                      " omitido: la advertencia 850/851/852 ya se mostro en esta sesion")
+                aptraIsOnExceptionScreen = True
+                ocultarPantalla()
+                Exit Sub
+            End If
+
+            Dim estadoRecibido As String = sValue
+            Dim fallaDispensadorActual As Boolean = AreAnyCassettesEmpty() OrElse IsCdmError()
+            Dim fallaImpresoraActual As Boolean = IsPrinterError()
+
+            If fallaDispensadorActual AndAlso fallaImpresoraActual Then
+                sValue = "851"
+            ElseIf fallaDispensadorActual Then
+                sValue = "852"
+            ElseIf fallaImpresoraActual Then
+                sValue = "850"
+            End If
+
+            MostrarWaitRegreso()
+
+            advertenciaHardwareMostrada = True
+
+            If sValue = "850" Then
+                sExp850OriginalUrl = currentScreen
+                sExp852OriginalUrl = ""
+            Else
+                sExp852OriginalUrl = currentScreen
+                sExp850OriginalUrl = ""
+            End If
+
+            Trace("Primera advertencia de la sesion: estado recibido=" & estadoRecibido &
+                  " HTML seleccionado=exp-" & sValue &
+                  " impresora=" & fallaImpresoraActual.ToString() &
+                  " cdm=" & fallaDispensadorActual.ToString())
         End If
 
         If (sValue = "200" OrElse sValue = "300") AndAlso currentScreen.ToLower().Contains("confirmacionpagotdc") AndAlso IsPrinterError() Then
@@ -1698,7 +1888,6 @@ Public Class Form1
             sErrorImpresora = ""
             sErrorCdm = ""
             isExpetionClosePageNDC = False
-            advertenciaMostrada = False
             bFaltaBilletesDesdeMenu = False
             bFastCashWaitActivo = False
             sFastCashActivo = ""
@@ -1706,6 +1895,8 @@ Public Class Form1
             aptraIsOnExceptionScreen = False
 
             If sValue = "500" Then
+                advertenciaHardwareMostrada = False
+                advertenciaDenominacionMostrada = False
                 sMenuActivo = ""
                 sLastMenuUrl = ""
                 Trace("Nueva sesion detectada")
@@ -1855,7 +2046,8 @@ Public Class Form1
 
                 ' Aseguramos que currentScreen refleje la URL REAL navegada,
                 ' no el menu.html base.
-                If Not (sUrlFinal.ToLower().Contains("wait") OrElse sUrlFinal.ToLower().Contains("read")) Then
+                If pageException = "" AndAlso
+                   Not (sUrlFinal.ToLower().Contains("wait") OrElse sUrlFinal.ToLower().Contains("read")) Then
                     currentScreen = sUrlFinal
                 End If
 
@@ -2099,12 +2291,14 @@ Public Class Form1
         Trace("Cerrando appScreens")
     End Sub
 
-    Private Sub AplicarResponsiveHtml()
+    Private Sub AplicarResponsiveHtml(Optional navegador As WebBrowser = Nothing)
         Try
-            If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then Exit Sub
+            Dim navegadorObjetivo As WebBrowser = navegador
+            If navegadorObjetivo Is Nothing Then navegadorObjetivo = WebBrowser1
+            If navegadorObjetivo Is Nothing OrElse navegadorObjetivo.Document Is Nothing Then Exit Sub
 
-            Dim viewportWidth As Integer = Math.Max(1, WebBrowser1.ClientSize.Width)
-            Dim viewportHeight As Integer = Math.Max(1, WebBrowser1.ClientSize.Height)
+            Dim viewportWidth As Integer = Math.Max(1, navegadorObjetivo.ClientSize.Width)
+            Dim viewportHeight As Integer = Math.Max(1, navegadorObjetivo.ClientSize.Height)
             Dim scaleX As String = (viewportWidth / 1024.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
             Dim scaleY As String = (viewportHeight / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
             Dim viewportWidthText As String = viewportWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)
@@ -2127,7 +2321,7 @@ Public Class Form1
                 "if(window.scrollTo){window.scrollTo(0,0);}" &
                 "})();"
 
-            WebBrowser1.Document.InvokeScript("eval", New Object() {script})
+            navegadorObjetivo.Document.InvokeScript("eval", New Object() {script})
         Catch ex As Exception
             Trace("Error inyectando reescalado HTML: " & ex.Message)
         End Try
@@ -2194,7 +2388,14 @@ Public Class Form1
 
                     If waitRegresoActivo Then
                         OcultarWaitRegreso()
-                        Trace("Wait de regreso retirado despues de cargar el menu HTML")
+
+                        If navegacionFastCashCubierta Then
+                            Trace("Cobertura de espera retirada; FastCash ya esta listo")
+                        Else
+                            Trace("Wait de regreso retirado despues de cargar el HTML final")
+                        End If
+
+                        navegacionFastCashCubierta = False
                     End If
                 End If
             End If

@@ -46,8 +46,12 @@ Public Class ClickEnVentana
 
         Dim rect As RECT
         If GetWindowRect(hWnd, rect) Then
-            Dim xAbs As Integer = rect.Left + offsetX
-            Dim yAbs As Integer = rect.Top + offsetY
+            Dim anchoVentana As Integer = Math.Max(1, rect.Right - rect.Left)
+            Dim altoVentana As Integer = Math.Max(1, rect.Bottom - rect.Top)
+            Dim xEscalado As Integer = CInt(Math.Round(offsetX * (anchoVentana / 1024.0)))
+            Dim yEscalado As Integer = CInt(Math.Round(offsetY * (altoVentana / 768.0)))
+            Dim xAbs As Integer = rect.Left + xEscalado
+            Dim yAbs As Integer = rect.Top + yEscalado
 
             ' Mover cursor y simular clic
             SetCursorPos(xAbs, yAbs)
@@ -61,6 +65,16 @@ Public Class ClickEnVentana
         End If
 
     End Sub
+
+    Public Shared Function ObtenerRectanguloVentana(tituloVentana As String) As System.Drawing.Rectangle
+        Dim hWnd As IntPtr = FindWindow(Nothing, tituloVentana)
+        If hWnd = IntPtr.Zero Then Return System.Drawing.Rectangle.Empty
+
+        Dim rect As RECT
+        If Not GetWindowRect(hWnd, rect) Then Return System.Drawing.Rectangle.Empty
+
+        Return System.Drawing.Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom)
+    End Function
 
     Public Shared Sub MoverMouse00()
         SetCursorPos(0, 0) ' Mueve el mouse a la esquina superior izquierda de la pantalla
