@@ -1,5 +1,7 @@
 ﻿Imports System.Text
 
+Imports System.Text.RegularExpressions
+
 Public Class MensajeNDC
     ' Propiedades principales
     Public Property TipoMensaje As String
@@ -140,7 +142,26 @@ Public Class MensajeNDC
                 End If
             Next
         End If
+        ' Los codigos deben extraerse desde su etiqueta completa. Nunca se debe
+        ' buscar un numero suelto en todo el NDC porque puede aparecer en
+        ' NUMAUTH, saldos, folios u otros campos validos.
+        Dim respuestaMatch As Match = Regex.Match(
+            mensaje,
+            "\bCODIGO\s+(?:DE\s+)?RESPUESTA\s*:?\s*(\d{3})\b",
+            RegexOptions.IgnoreCase)
+        If respuestaMatch.Success Then
+            ndc.codigoRespuesta = respuestaMatch.Groups(1).Value
+        End If
 
+        ' Se acepta ERROR y ERRORR porque ambos formatos existen en mensajes
+        ' historicos del host.
+        Dim errorMatch As Match = Regex.Match(
+            mensaje,
+            "\bCODIGO\s+DE\s+ERRORR?\s*:?\s*(\d{3})\b",
+            RegexOptions.IgnoreCase)
+        If errorMatch.Success Then
+            ndc.codigoError = errorMatch.Groups(1).Value
+        End If
 
         Return ndc
     End Function

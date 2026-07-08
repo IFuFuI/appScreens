@@ -785,6 +785,19 @@ Public Class Form1
              (textoHost.Contains("RECHAZO RETIRO") AndAlso textoHost.Contains("SIN EFECTIVO")))
     End Function
 
+    Private Function ExtraerCodigoRechazoHost(contenido As String) As String
+        If String.IsNullOrWhiteSpace(contenido) Then Return ""
+
+        Dim coincidencia As Global.System.Text.RegularExpressions.Match =
+            Global.System.Text.RegularExpressions.Regex.Match(
+                NormalizarTextoHost(contenido),
+                "\bTRANSACCION\s+RECHAZADA\s*:?\s*(\d{3})\b",
+                Global.System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+
+        If coincidencia.Success Then Return coincidencia.Groups(1).Value
+        Return ""
+    End Function
+
     Private Function ObtenerUrlRetiroNoCompletado() As String
         Try
             Dim welcomeUrl As String = ReadIni("500", "PAGE", ConfigManager.ScreensFile)
@@ -1299,8 +1312,13 @@ Public Class Form1
             Dim urlHostCandidata As String = ResolverUrlHostNdc(ndc)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
             Dim esError As Boolean = False
+            Dim textoHost As String = NormalizarTextoHost(contenido)
+            Dim codigoRechazo As String = ExtraerCodigoRechazoHost(contenido)
+            Dim tieneRechazoHost As Boolean = textoHost.Contains("TRANSACCION RECHAZADA")
+            Dim tieneRespuestaNoExitosa As Boolean =
+                Not String.IsNullOrWhiteSpace(ndc.codigoRespuesta) AndAlso ndc.codigoRespuesta <> "000"
 
-            If contenido.Contains("TRANSACCION RECHAZADA") OrElse (contenido.Contains("CODIGO RESPUESTA") AndAlso Not contenido.Contains("CODIGO RESPUESTA 000")) Then
+            If tieneRechazoHost OrElse tieneRespuestaNoExitosa Then
                 If Not esFaltaDenominacion Then
                     If esMenuHostSegunIni Then
                         Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
@@ -1328,7 +1346,7 @@ Public Class Form1
                 End If
             End If
 
-            If contenido.Contains("CODIGO DE ERRORR") Then
+            If Not String.IsNullOrWhiteSpace(ndc.codigoError) Then
                 esError = True
             End If
 
@@ -1359,8 +1377,14 @@ Public Class Form1
                 Trace("Bandera isHostError activada para interceptar pantalla 513")
             End If
 
-            If contenido.Contains("TARJETA INVALIDA") OrElse contenido.Contains(" 014") Then
-                Trace("Detectado error 014 (Tarjeta Inválida). Activando isHostError.")
+            Dim esError014 As Boolean =
+                textoHost.Contains("TARJETA INVALIDA") OrElse
+                ndc.codigoRespuesta = "014" OrElse
+                ndc.codigoError = "014" OrElse
+                codigoRechazo = "014"
+
+            If esError014 Then
+                Trace("Detectado error 014 real (Tarjeta Inválida). Activando isHostError.")
                 isHostError = True
                 esError = True
             End If
