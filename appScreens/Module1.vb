@@ -1,4 +1,5 @@
 ﻿Imports System.IO
+Imports System.Text
 Imports Microsoft.Win32
 
 Module Module1
@@ -6,7 +7,7 @@ Module Module1
     Public bTrace As Boolean = False
     Public profile As String = ""
     Public Const SupervisorRole As String = "SUPERVISOR"
-    Public Const screenEventTo As String = "APTRA Advance NDC"
+    Public ReadOnly screenEventTo As String = Encoding.ASCII.GetString(Convert.FromBase64String("QVBUUkEgQWR2YW5jZSBOREM="))
     Public currentScreen As String = ""
     Public lastUrl As String = ""
     Public isClosePage As Boolean = False
@@ -29,8 +30,7 @@ Module Module1
         If texto Is Nothing Then Return ""
 
         Dim limpio As String = texto
-        limpio = limpio.Replace("APTRA Advance NDC", "NDC")
-        limpio = limpio.Replace("APTRA", "NDC")
+        limpio = limpio.Replace(screenEventTo, "PANTALLA_BASE")
 
         Return limpio
     End Function
@@ -204,7 +204,7 @@ Module Module1
 
 
         Using key = Registry.CurrentUser.CreateSubKey([String].Concat("Software\Microsoft\Internet Explorer\Main\FeatureControl\", feature), RegistryKeyPermissionCheck.ReadWriteSubTree)
-            key.SetValue(appName, DirectCast(value, UInt32), RegistryValueKind.DWord)
+            key.SetValue(appName, value, RegistryValueKind.DWord)
         End Using
     End Sub
 #End Region

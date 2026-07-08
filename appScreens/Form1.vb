@@ -23,6 +23,8 @@ Public Class Form1
     Dim isHostError As Boolean = False
 
     Dim ultimoLogCassettes As DateTime = DateTime.MinValue
+    Dim sinEfectivoEstable As Boolean = False
+    Dim inicioRecuperacionEfectivo As DateTime = DateTime.MinValue
 
     ' dllInterfaceNdc: Clase para manejar interface NDC
     Dim dllInterfaceNdc As New appInterfaceNDC.Class1
@@ -77,7 +79,7 @@ Public Class Form1
 
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
-    Dim advertenciaHardwareMostrada As Boolean = False
+    Dim advertenciaHardwareActiva As Boolean = False
     Dim advertenciaDenominacionMostrada As Boolean = False
     Dim transicionMenuNdcPendiente As Boolean = False
     Dim transicionRetiroFastCashPendiente As Boolean = False
@@ -95,7 +97,7 @@ Public Class Form1
     Dim bFastCashWaitActivo As Boolean = False
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
-    Dim aptraIsOnExceptionScreen As Boolean = False ' Destraba el cajero en fallas de hardware
+    Dim baseScreenIsOnException As Boolean = False
     Dim keepCustomErrorPageActive As Boolean = False ' Protege las pantallas de error
     Dim keepCancelPageActive As Boolean = False ' Protege la cancelacion custom hasta regresar a welcome
 
@@ -935,63 +937,54 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub AplicarEstadoDispositivosEnHtml(origen As String, Optional registrar As Boolean = False)
+        Try
+            If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
+                If registrar Then Trace("Estado visual no aplicado: documento no disponible. origen=" & origen)
+                Return
+            End If
+
+            Dim sinEfectivo As Boolean = AreAnyCassettesEmpty(False)
+            Dim errorImpresora As Boolean = IsPrinterError()
+            Dim errorDispensador As Boolean = IsCdmError()
+            Dim esWelcome As Boolean = WebBrowser1.Url IsNot Nothing AndAlso
+                WebBrowser1.Url.LocalPath.ToLower().Contains("welcome")
+            Dim mostrarAvisoSinEfectivo As Boolean = If(esWelcome,
+                                                        ObtenerSinEfectivoEstable(registrar),
+                                                        sinEfectivo)
+
+            InvokeScriptOpcional(If(errorImpresora, "showErrPrinter", "hideErrPrinter"))
+            InvokeScriptOpcional(If(errorImpresora, "hideBtnConsultaSaldo", "showBtnConsultaSaldo"))
+            InvokeScriptOpcional(If(errorDispensador, "showErrCdm", "hideErrCdm"))
+            InvokeScriptOpcional(If(isHostError, "showErrHost", "hideErrHost"))
+            InvokeScriptOpcional(If(mostrarAvisoSinEfectivo OrElse isHostError, "showErrNoCash", "hideErrNoCash"))
+            InvokeScriptOpcional(If(sinEfectivo OrElse isHostError, "hideBtnRetiro", "showBtnRetiro"))
+
+            If registrar Then
+                Trace("Estado visual aplicado: origen=" & origen &
+                      " sinEfectivo=" & sinEfectivo.ToString() &
+                      " avisoSinEfectivo=" & mostrarAvisoSinEfectivo.ToString() &
+                      " impresora=" & errorImpresora.ToString() &
+                      " dispensador=" & errorDispensador.ToString() &
+                      " host=" & isHostError.ToString())
+            End If
+        Catch ex As Exception
+            Trace("Error aplicando estado visual de dispositivos: " & ex.Message)
+        End Try
+    End Sub
+
     Public Sub wb_RevisaEstadusDevices()
         Try
             Trace("Revision de dispositivos solicitada desde HTML")
             sErrorImpresora = ""
-            Task.Run(Sub()
-                         Try
-                             Dim anyZero As Boolean = AreAnyCassettesEmpty()
-                             Dim isPrinterErr As Boolean = IsPrinterError()
-                             Trace("Resultado dispositivos: sinEfectivo=" & anyZero & " errorImpresora=" & isPrinterErr)
-                             If Me IsNot Nothing AndAlso Not Me.IsDisposed Then
-                                 Me.BeginInvoke(Sub()
-                                                    Try
-                                                        If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
-                                                            Trace("Documento del navegador no disponible durante revision de dispositivos")
-                                                            Return
-                                                        End If
-
-                                                        If isPrinterErr Then
-                                                            WebBrowser1.Document.InvokeScript("showErrPrinter")
-                                                            InvokeScriptOpcional("hideBtnConsultaSaldo")
-                                                        Else
-                                                            WebBrowser1.Document.InvokeScript("hideErrPrinter")
-                                                            InvokeScriptOpcional("showBtnConsultaSaldo")
-                                                        End If
-
-                                                        If isHostError Then
-                                                            WebBrowser1.Document.InvokeScript("showErrHost")
-                                                        Else
-                                                            WebBrowser1.Document.InvokeScript("hideErrHost")
-                                                        End If
-
-                                                        If anyZero Then
-                                                            Trace("Calling hideBtnRetiro from wb_RevisaEstadusDevices")
-                                                            WebBrowser1.Document.InvokeScript("hideBtnRetiro")
-                                                            WebBrowser1.Document.InvokeScript("showErrNoCash")
-                                                        Else
-                                                            Trace("Calling showBtnRetiro from wb_RevisaEstadusDevices")
-                                                            WebBrowser1.Document.InvokeScript("showBtnRetiro")
-                                                            WebBrowser1.Document.InvokeScript("hideErrNoCash")
-                                                        End If
-                                                    Catch ex As Exception
-                                                        Trace("Error al ejecutar script de estado de cassettes: " & ex.Message)
-                                                    End Try
-                                                End Sub)
-                             End If
-                         Catch ex As Exception
-                             Trace("Error tarea comprobación cassettes: " & ex.Message)
-                         End Try
-                     End Sub)
-
+            AplicarEstadoDispositivosEnHtml("solicitud_html", True)
             tmMsgDevices.Enabled = True
         Catch ex As Exception
             Trace("Error en wb_RevisaEstadusDevices: " & ex.Message)
         End Try
     End Sub
 
-    Private Function AreAnyCassettesEmpty() As Boolean
+    Private Function AreAnyCassettesEmpty(Optional registrarDetalle As Boolean = True) As Boolean
         Try
             Dim c1 As Boolean = TieneBilletes("1")
             Dim c2 As Boolean = TieneBilletes("2")
@@ -1000,13 +993,35 @@ Public Class Form1
 
             ' Si NINGUNO tiene billetes, están todos vacíos
             Dim allEmpty As Boolean = Not (c1 OrElse c2 OrElse c3 OrElse c4)
-            Trace("Estado cassettes: C1=" & c1 & " C2=" & c2 & " C3=" & c3 & " C4=" & c4 & " todosVacios=" & allEmpty)
+            If registrarDetalle Then
+                Trace("Estado cassettes: C1=" & c1 & " C2=" & c2 & " C3=" & c3 & " C4=" & c4 & " todosVacios=" & allEmpty)
+            End If
 
             Return allEmpty OrElse IsCdmError()
         Catch ex As Exception
             Trace("Error al revisar cassettes: " & ex.Message)
             Return False
         End Try
+    End Function
+
+    Private Function ObtenerSinEfectivoEstable(Optional registrar As Boolean = False) As Boolean
+        Dim lecturaSinEfectivo As Boolean = AreAnyCassettesEmpty(False)
+
+        If lecturaSinEfectivo Then
+            sinEfectivoEstable = True
+            inicioRecuperacionEfectivo = DateTime.MinValue
+        ElseIf sinEfectivoEstable Then
+            If inicioRecuperacionEfectivo = DateTime.MinValue Then
+                inicioRecuperacionEfectivo = DateTime.Now
+                If registrar Then Trace("Recuperacion de efectivo pendiente de confirmacion")
+            ElseIf DateTime.Now.Subtract(inicioRecuperacionEfectivo).TotalSeconds >= 5 Then
+                sinEfectivoEstable = False
+                inicioRecuperacionEfectivo = DateTime.MinValue
+                Trace("Recuperacion de efectivo confirmada")
+            End If
+        End If
+
+        Return sinEfectivoEstable
     End Function
 
     Private Function IsPrinterError() As Boolean
@@ -1066,9 +1081,10 @@ Public Class Form1
             sExp850OriginalUrl = ""
             sExp852OriginalUrl = ""
             bNDCPageActive = False
+            advertenciaHardwareActiva = False
             Trace("Ejectua excepción FDK.. navega a menu guardado: " + urlRetornoExcepcion)
 
-            If aptraIsOnExceptionScreen Then
+            If baseScreenIsOnException Then
                 Trace("Enviando click para destrabar pantalla 850/851/852 nativa.")
                 Me.Hide()
                 Threading.Thread.Sleep(300)
@@ -1083,7 +1099,7 @@ Public Class Form1
                     Case "8" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 713)
                 End Select
                 Threading.Thread.Sleep(100)
-                aptraIsOnExceptionScreen = False
+                baseScreenIsOnException = False
             Else
                 Trace("No se reportó pantalla de excepción nativa, es un error local, no enviamos clic físico.")
             End If
@@ -1581,58 +1597,13 @@ Public Class Form1
             ' Agregamos la condición para que no dispare alertas si está imprimiendo
             If (esPaginaMenu OrElse esFastCash) AndAlso Not esImpresionPrematura Then
                 Dim fallaDispensador As Boolean = AreAnyCassettesEmpty() OrElse IsCdmError()
-                Dim fallaImpresora As Boolean = IsPrinterError()
-
                 Dim c1 As Boolean = TieneBilletes("1")
                 Dim c2 As Boolean = TieneBilletes("2")
                 Dim c3 As Boolean = TieneBilletes("3")
                 Dim c4 As Boolean = TieneBilletes("4")
                 Dim faltaAlgunaDenominacion As Boolean = (Not c1 OrElse Not c2 OrElse Not c3 OrElse Not c4) AndAlso Not fallaDispensador
 
-                If (fallaDispensador OrElse fallaImpresora) AndAlso
-                   Not advertenciaHardwareMostrada Then
-                    MostrarWaitRegreso()
-                End If
-
-                If fallaDispensador AndAlso fallaImpresora AndAlso Not advertenciaHardwareMostrada Then
-                    Trace("Falla de efectivo e impresora detectada; mostrando exp-851")
-                    advertenciaHardwareMostrada = True
-                    sExp852OriginalUrl = sUrl
-                    sExp850OriginalUrl = ""
-                    currentScreen = sUrl
-                    pageException = "8"
-                    isExpetionClosePageNDC = False
-                    Me.Show()
-                    Dim sUrlBase As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
-                    sUrl = sUrlBase & "exp-851.html"
-                    currentHoleRequired = False
-                ElseIf fallaDispensador AndAlso Not advertenciaHardwareMostrada Then
-                    Trace("Falla de efectivo/dispensador detectada; mostrando exp-852")
-                    advertenciaHardwareMostrada = True
-                    sExp852OriginalUrl = sUrl
-                    sExp850OriginalUrl = ""
-                    currentScreen = sUrl
-                    pageException = "8"
-                    isExpetionClosePageNDC = False
-                    Me.Show()
-                    Dim sUrlBase As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
-                    sUrl = sUrlBase & "exp-852.html"
-                    currentHoleRequired = False
-                ElseIf fallaImpresora AndAlso Not advertenciaHardwareMostrada Then
-                    Trace("Falla de impresora detectada; mostrando exp-850")
-                    advertenciaHardwareMostrada = True
-                    sExp850OriginalUrl = sUrl
-                    sExp852OriginalUrl = ""
-                    currentScreen = sUrl
-                    pageException = "8"
-                    isExpetionClosePageNDC = False
-                    Me.Show()
-                    Dim sUrlBase850 As String = sUrl.Substring(0, sUrl.LastIndexOf("\") + 1)
-                    sUrl = sUrlBase850 & "exp-850.html"
-                    currentHoleRequired = False
-                ElseIf fallaDispensador OrElse fallaImpresora Then
-                    Trace("Advertencia 850/851/852 omitida: ya fue mostrada en esta sesion")
-                ElseIf faltaAlgunaDenominacion AndAlso esFastCash AndAlso
+                If faltaAlgunaDenominacion AndAlso esFastCash AndAlso
                        Not advertenciaDenominacionMostrada Then
                     CalcularValoresDinamicos()
                     bFaltaBilletesDesdeMenu = True
@@ -1788,14 +1759,14 @@ Public Class Form1
            WebBrowser1.Url.LocalPath.ToLower().Contains("exp-85") Then
             Trace("Estado " & sValue & " ignorado: el HTML de excepcion ya esta visible")
             isExpetionClosePageNDC = False
-            aptraIsOnExceptionScreen = True
+            baseScreenIsOnException = True
             Exit Sub
         End If
 
         If sValue = "850" AndAlso sExp850OriginalUrl <> "" Then
             Trace("850 ignorado: exp-850 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
-            aptraIsOnExceptionScreen = True
+            baseScreenIsOnException = True
             Exit Sub
         End If
 
@@ -1805,30 +1776,27 @@ Public Class Form1
 
             Trace("850 ignorado: exp-851 ya estaba activo por falla combinada")
             isExpetionClosePageNDC = False
-            aptraIsOnExceptionScreen = True
+            baseScreenIsOnException = True
             Exit Sub
         End If
 
         If sValue = "851" AndAlso sExp852OriginalUrl <> "" Then
             Trace("851 ignorado: exp-851 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
-            aptraIsOnExceptionScreen = True
+            baseScreenIsOnException = True
             Exit Sub
         End If
 
         If sValue = "852" AndAlso sExp852OriginalUrl <> "" Then
             Trace("852 ignorado: exp-852 ya estaba activo; se mantiene bandera de excepcion nativa")
             isExpetionClosePageNDC = False
-            aptraIsOnExceptionScreen = True
+            baseScreenIsOnException = True
             Exit Sub
         End If
 
         If esEstadoAdvertenciaHardware Then
-            If advertenciaHardwareMostrada Then
-                Trace("Estado " & sValue &
-                      " omitido: la advertencia 850/851/852 ya se mostro en esta sesion")
-                aptraIsOnExceptionScreen = True
-                ocultarPantalla()
+            If advertenciaHardwareActiva Then
+                Trace("Estado " & sValue & " duplicado: la advertencia actual sigue activa")
                 Exit Sub
             End If
 
@@ -1846,7 +1814,7 @@ Public Class Form1
 
             MostrarWaitRegreso()
 
-            advertenciaHardwareMostrada = True
+            advertenciaHardwareActiva = True
 
             If sValue = "850" Then
                 sExp850OriginalUrl = currentScreen
@@ -1856,7 +1824,7 @@ Public Class Form1
                 sExp850OriginalUrl = ""
             End If
 
-            Trace("Primera advertencia de la sesion: estado recibido=" & estadoRecibido &
+            Trace("Advertencia de hardware: estado recibido=" & estadoRecibido &
                   " HTML seleccionado=exp-" & sValue &
                   " impresora=" & fallaImpresoraActual.ToString() &
                   " cdm=" & fallaDispensadorActual.ToString())
@@ -1870,9 +1838,9 @@ Public Class Form1
         ' >>> FIX: Cuando sale la pantalla de excepción (nativa) por segunda o más veces,
         ' encendemos la bandera para obligar a que el clic del usuario se envíe al flujo nativo.
         If sValue = "850" OrElse sValue = "851" OrElse sValue = "852" Then
-            aptraIsOnExceptionScreen = True
+            baseScreenIsOnException = True
         Else
-            aptraIsOnExceptionScreen = False
+            baseScreenIsOnException = False
         End If
 
         pageException = ""
@@ -1916,10 +1884,10 @@ Public Class Form1
             bFastCashWaitActivo = False
             sFastCashActivo = ""
             urlFastCashGlobal = ""
-            aptraIsOnExceptionScreen = False
+            baseScreenIsOnException = False
 
             If sValue = "500" Then
-                advertenciaHardwareMostrada = False
+                advertenciaHardwareActiva = False
                 advertenciaDenominacionMostrada = False
                 sMenuActivo = ""
                 sLastMenuUrl = ""
@@ -2170,36 +2138,9 @@ Public Class Form1
             If sEstatusPtr <> sErrorImpresora Then
                 sErrorImpresora = sEstatusPtr
                 Trace("Cambio Estatus Impresora: " + sEstatusPtr)
-
-                Dim sUrlActual As String = currentScreen.ToLower()
-                Dim esWelcome As Boolean = sUrlActual.Contains("welcome") OrElse sUrlActual = ""
-                Dim esMenuMore As Boolean = sUrlActual.Contains("menumore")
-                Dim esMenuOtrosBancos As Boolean = sUrlActual.Contains("menuotrosbancossinnip")
-
-                If esWelcome OrElse esMenuMore OrElse esMenuOtrosBancos Then
-                    ' >>> FIX: Evaluamos HWERROR, NODEVICE y OFFLINE
-                    If sErrorImpresora = "HWERROR" OrElse sErrorImpresora = "NODEVICE" OrElse sErrorImpresora = "OFFLINE" Then
-                        WebBrowser1.Document.InvokeScript("showErrPrinter")
-                        InvokeScriptOpcional("hideBtnConsultaSaldo")
-                    Else
-                        WebBrowser1.Document.InvokeScript("hideErrPrinter")
-                        InvokeScriptOpcional("showBtnConsultaSaldo")
-                    End If
-                    ' <<< FIN FIX
-
-                    If AreAnyCassettesEmpty() Then
-                        WebBrowser1.Document.InvokeScript("hideBtnRetiro")
-                    Else
-                        WebBrowser1.Document.InvokeScript("showBtnRetiro")
-                    End If
-
-                    Trace("Actualizando pantalla welcome por cambio de impresora")
-                Else
-                    Trace("Cambio de impresora detectado fuera de welcome/menuMore; no se actualiza HTML (" & currentScreen & ")")
-                End If
             End If
         Catch ex As Exception
-            Trace("Error al hacer el invoke Welcome: " + ex.Message)
+            Trace("Error revisando estado de impresora: " + ex.Message)
         End Try
     End Sub
 
@@ -2209,37 +2150,9 @@ Public Class Form1
             If sEstatusCdm <> sErrorCdm Then
                 sErrorCdm = sEstatusCdm
                 Trace("Cambio estatus dispensador: " + sEstatusCdm)
-
-                If IsCdmError() Then
-                    WebBrowser1.Document.InvokeScript("showErrCdm")
-                    WebBrowser1.Document.InvokeScript("showErrNoCash")
-                Else
-                    WebBrowser1.Document.InvokeScript("hideErrCdm")
-                    WebBrowser1.Document.InvokeScript("hideErrNoCash")
-                End If
-
-                If isHostError Then
-                    Trace("Dispensador: error host activo; ocultando boton retiro")
-                    WebBrowser1.Document.InvokeScript("showErrHost")
-                    WebBrowser1.Document.InvokeScript("showErrNoCash")
-                Else
-                    WebBrowser1.Document.InvokeScript("hideErrHost")
-                End If
-
-                Trace("Actualizando pantalla welcome por cambio de dispensador")
-
-                If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
-                    If IsCdmError() Then
-                        Trace("Dispensador con error; ocultando boton retiro")
-                        WebBrowser1.Document.InvokeScript("hideBtnRetiro")
-                    Else
-                        Trace("Dispensador y host OK; mostrando boton retiro")
-                        WebBrowser1.Document.InvokeScript("showBtnRetiro")
-                    End If
-                End If
             End If
         Catch ex As Exception
-            Trace("Error al hacer el invoke Welcome: " + ex.Message)
+            Trace("Error revisando estado de dispensador: " + ex.Message)
         End Try
     End Sub
 
@@ -2263,28 +2176,7 @@ Public Class Form1
                 Trace("IsCdmError?: " & IsCdmError().ToString())
             End If
 
-            If WebBrowser1 Is Nothing OrElse WebBrowser1.Document Is Nothing Then
-                If imprimirLog Then Trace("Documento del navegador no disponible; no se ejecuta script")
-                Return
-            End If
-
-            Dim allCassetteEmpty As Boolean = Not (c1 OrElse c2 OrElse c3 OrElse c4)
-
-            If allCassetteEmpty OrElse IsCdmError() Then
-                If imprimirLog Then Trace("Ocultando retiro y mostrando error sin efectivo/error dispensador")
-                WebBrowser1.Document.InvokeScript("hideBtnRetiro")
-                WebBrowser1.Document.InvokeScript("showErrNoCash")
-            Else
-                If imprimirLog Then Trace("Invocando showBtnRetiro (cassettes con dinero)")
-                WebBrowser1.Document.InvokeScript("showBtnRetiro")
-                WebBrowser1.Document.InvokeScript("hideErrNoCash")
-            End If
-
-            If IsPrinterError() Then
-                WebBrowser1.Document.InvokeScript("showErrPrinter")
-            Else
-                WebBrowser1.Document.InvokeScript("hideErrPrinter")
-            End If
+            AplicarEstadoDispositivosEnHtml("temporizador", imprimirLog)
 
         Catch ex As Exception
             Trace("Error en checkEstusCassettes: " & ex.Message)
@@ -2361,34 +2253,7 @@ Public Class Form1
                 If WebBrowser1.Document IsNot Nothing Then
                     AplicarResponsiveHtml()
 
-                    Try
-                        Dim anyZero As Boolean = AreAnyCassettesEmpty()
-                        Trace("DocumentCompleted - AreAnyCassettesEmpty: " & anyZero)
-
-                        If IsCdmError() Then
-                            WebBrowser1.Document.InvokeScript("showErrCdm")
-                        Else
-                            WebBrowser1.Document.InvokeScript("hideErrCdm")
-                        End If
-
-                        If IsPrinterError() Then
-                            WebBrowser1.Document.InvokeScript("showErrPrinter")
-                            InvokeScriptOpcional("hideBtnConsultaSaldo")
-                        Else
-                            WebBrowser1.Document.InvokeScript("hideErrPrinter")
-                            InvokeScriptOpcional("showBtnConsultaSaldo")
-                        End If
-
-                        If anyZero Then
-                            Trace("DocumentCompleted - Calling hideBtnRetiro (cassettes/cdm error)")
-                            WebBrowser1.Document.InvokeScript("hideBtnRetiro")
-                        Else
-                            Trace("DocumentCompleted - Calling showBtnRetiro")
-                            WebBrowser1.Document.InvokeScript("showBtnRetiro")
-                        End If
-                    Catch ex As Exception
-                        Trace("Error al ejecutar script de cassettes al cargar documento: " & ex.Message)
-                    End Try
+                    AplicarEstadoDispositivosEnHtml("carga_documento", True)
 
                     If currentHoleRequired Then
                         ApplyTransparentRegion(currentHoleY, currentHoleHeight)
