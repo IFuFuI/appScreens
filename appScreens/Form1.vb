@@ -76,6 +76,7 @@ Public Class Form1
     Dim regresoMenuMorePendiente As Boolean = False
     Dim timerOcultarWaitRegreso As Timer = Nothing
     Dim toqueRegresoNativoDetectado As Boolean = False
+    Dim idCoberturaRender As Integer = 0
 
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
@@ -95,6 +96,8 @@ Public Class Form1
     Dim bFaltaBilletesDesdeMenu As Boolean = False
     Dim sFastCashActivo As String = ""
     Dim bFastCashWaitActivo As Boolean = False
+    Dim proteccionMontosRSTHasta As DateTime = DateTime.MinValue
+    Dim proteccionMontosRSTPendienteHasta As DateTime = DateTime.MinValue
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim baseScreenIsOnException As Boolean = False
@@ -371,6 +374,11 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Function UsarCoberturaSinOcultarPrincipal() As Boolean
+        Dim valor As String = ReadIni("PARAM", "TRANSITION_RENDER_FIX", ConfigManager.ScreensFile).Trim().ToUpper()
+        Return valor <> "FALSE" AndAlso valor <> "0" AndAlso valor <> "OFF"
+    End Function
+
     Private Sub DejarWaitComoPrimeraCapaOculta()
         Try
             PrepararWaitRegreso()
@@ -380,7 +388,7 @@ Public Class Form1
             If timerOcultarWaitRegreso IsNot Nothing Then timerOcultarWaitRegreso.Stop()
 
             RestoreFullRegion()
-            WebBrowser1.Visible = False
+            WebBrowser1.Visible = UsarCoberturaSinOcultarPrincipal()
             webBrowserWaitRegreso.Visible = True
             webBrowserWaitRegreso.BringToFront()
             Trace("024: formulario oculto preparado para abrir directamente con wait.html")
@@ -402,13 +410,14 @@ Public Class Form1
 
             RestoreFullRegion()
             waitRegresoActivo = True
-            WebBrowser1.Visible = False
+            idCoberturaRender += 1
+            WebBrowser1.Visible = UsarCoberturaSinOcultarPrincipal()
             webBrowserWaitRegreso.Visible = True
             webBrowserWaitRegreso.BringToFront()
             Me.Show()
             Me.BringToFront()
             Me.Update()
-            Trace("appScreens en Show con wait.html precargado")
+            Trace("TRANSICION cobertura visible id=" & idCoberturaRender.ToString())
             Return True
         Catch ex As Exception
             Trace("Error mostrando wait de regreso: " & ex.Message)
@@ -425,6 +434,19 @@ Public Class Form1
 
     Private Sub OcultarWaitRegreso()
         If timerOcultarWaitRegreso IsNot Nothing Then timerOcultarWaitRegreso.Stop()
+
+        If UsarCoberturaSinOcultarPrincipal() Then
+            Dim idActual As Integer = idCoberturaRender
+            waitRegresoActivo = False
+
+            Try
+                Me.BeginInvoke(New MethodInvoker(Sub() RetirarCoberturaRender(idActual)))
+            Catch ex As Exception
+                RetirarCoberturaRender(idActual)
+            End Try
+            Exit Sub
+        End If
+
         If WebBrowser1 IsNot Nothing Then
             WebBrowser1.Visible = True
             WebBrowser1.Update()
@@ -432,6 +454,20 @@ Public Class Form1
         If webBrowserWaitRegreso IsNot Nothing Then webBrowserWaitRegreso.Visible = False
         If WebBrowser1 IsNot Nothing Then WebBrowser1.BringToFront()
         waitRegresoActivo = False
+    End Sub
+
+    Private Sub RetirarCoberturaRender(idEsperado As Integer)
+        If idEsperado <> idCoberturaRender OrElse waitRegresoActivo Then Exit Sub
+
+        If webBrowserWaitRegreso IsNot Nothing Then webBrowserWaitRegreso.Visible = False
+        If WebBrowser1 IsNot Nothing Then
+            WebBrowser1.Visible = True
+            WebBrowser1.BringToFront()
+            WebBrowser1.Invalidate(True)
+            WebBrowser1.Update()
+        End If
+
+        Trace("TRANSICION cobertura retirada id=" & idEsperado.ToString())
     End Sub
 
     Private Sub TimerOcultarWaitRegreso_Tick(sender As Object, e As EventArgs)
@@ -555,6 +591,40 @@ Public Class Form1
         Dim u As String = If(url, "").Trim().ToLower()
         Return u.EndsWith("\faltabilletesdinamico.html") OrElse
                u.EndsWith("/faltabilletesdinamico.html")
+    End Function
+
+    Private Function EsUrlMontosRST(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\montos_rst.html") OrElse
+               u.EndsWith("/montos_rst.html")
+    End Function
+
+    Private Function EsUrlWelcome(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\welcome.html") OrElse
+               u.EndsWith("/welcome.html")
+    End Function
+
+    Private Function EsNdcMontosRST(contenido As String, url As String) As Boolean
+        Dim texto As String = NormalizarTextoHost(contenido)
+        Return EsUrlMontosRST(url) AndAlso
+               texto.Contains("VALIDACION DE DENOMINACION") AndAlso
+               texto.Contains("PARA RETIROS SIN TARJETA") AndAlso
+               texto.Contains("ESTATUS OK")
+    End Function
+
+    Private Sub ActivarProteccionMontosRST()
+        proteccionMontosRSTHasta = DateTime.Now.AddSeconds(4)
+        proteccionMontosRSTPendienteHasta = DateTime.MinValue
+        Trace("Proteccion Montos_RST activa por 4 segundos")
+    End Sub
+
+    Private Function ProteccionMontosRSTActiva() As Boolean
+        Return DateTime.Now <= proteccionMontosRSTHasta
+    End Function
+
+    Private Function ProteccionMontosRSTPendiente() As Boolean
+        Return DateTime.Now <= proteccionMontosRSTPendienteHasta
     End Function
 
     Private Sub LoadHoleConfigFromIni(screenId As String)
@@ -838,7 +908,19 @@ Public Class Form1
 
                 Dim allowScreen As Boolean = True
 
-                If bFaltaBilletesDesdeMenu AndAlso EsUrlFaltaBilletesDinamico(currentScreen) AndAlso
+                If sValue = "300" AndAlso EsUrlWelcome(currentScreen) Then
+                    proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(900)
+                    Trace("Ventana breve Montos_RST pendiente tras 300 desde welcome")
+                End If
+
+                If (sValue = "300" OrElse sValue = "701") AndAlso
+                   ProteccionMontosRSTActiva() AndAlso EsUrlMontosRST(currentScreen) Then
+                    Trace("Ignorando " & sValue & " durante proteccion Montos_RST activa")
+                    allowScreen = False
+                ElseIf sValue = "701" AndAlso ProteccionMontosRSTPendiente() Then
+                    Trace("Ignorando 701 inmediato por ventana pendiente Montos_RST")
+                    allowScreen = False
+                ElseIf bFaltaBilletesDesdeMenu AndAlso EsUrlFaltaBilletesDinamico(currentScreen) AndAlso
                    (sValue = "300" OrElse sValue = "701") Then
                     Trace("Ignorando " & sValue & " mientras FaltaBilletesDinamico está activo desde FastCash")
                     allowScreen = False
@@ -1202,6 +1284,12 @@ Public Class Form1
             Case "multiplosDin"
                 sretur = globalMultiplosDin
             Case "montoMaxDin"
+                sretur = globalMontoMaximoDin
+            Case "multiplosRSTDin"
+                CalcularValoresDinamicos()
+                sretur = globalMultiplosDin
+            Case "montoMaxRSTDin"
+                CalcularValoresDinamicos()
                 sretur = globalMontoMaximoDin
             Case "cajeroSinEfectivo"
                 sretur = If(AreAnyCassettesEmpty(), "1", "0")
@@ -1579,6 +1667,10 @@ Public Class Form1
             lastUrl = currentScreen
             currentScreen = sUrl
             bNDCPageActive = True
+
+            If EsNdcMontosRST(contenido, sUrl) Then
+                ActivarProteccionMontosRST()
+            End If
 
             If esFastCash Then
                 urlFastCashGlobal = sUrl
@@ -2219,8 +2311,20 @@ Public Class Form1
             Dim scaleY As String = (viewportHeight / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
             Dim viewportWidthText As String = viewportWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)
             Dim viewportHeightText As String = viewportHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim escalaUniformeValor As Double = Math.Min(viewportWidth / 1024.0, viewportHeight / 768.0)
+            Dim escalaUniforme As String = escalaUniformeValor.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim contenidoWidth As Double = 1024.0 * escalaUniformeValor
+            Dim contenidoHeight As Double = 768.0 * escalaUniformeValor
+            Dim offsetX As String = ((viewportWidth - contenidoWidth) / 2.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim offsetY As String = ((viewportHeight - contenidoHeight) / 2.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            Dim modoResponsive As String = ReadIni("PARAM", "RESPONSIVE_RENDER_MODE", ConfigManager.ScreensFile).Trim().ToUpper()
 
-            Dim script As String =
+            If modoResponsive <> "LEGACY" AndAlso viewportWidth = 1024 AndAlso viewportHeight = 768 Then
+                Trace("Responsive aplicado: modo=NATIVO viewport=1024x768 escala=1")
+                Exit Sub
+            End If
+
+            Dim scriptBase As String =
                 "(function(){" &
                 "var d=document,b=d.body,e=d.documentElement;if(!b||!e){return;}" &
                 "var s=d.getElementById('appScreensResponsiveStyle');" &
@@ -2229,15 +2333,33 @@ Public Class Form1
                 "(d.getElementsByTagName('head')[0]||e).appendChild(s);}" &
                 "e.style.margin='0px';e.style.padding='0px';e.style.width='" & viewportWidthText & "px';e.style.height='" & viewportHeightText & "px';e.style.overflow='hidden';" &
                 "b.style.margin='0px';b.style.padding='0px';b.style.width='" & viewportWidthText & "px';b.style.height='" & viewportHeightText & "px';b.style.minHeight='" & viewportHeightText & "px';b.style.overflow='hidden';" &
-                "b.style.backgroundSize='100% 100%';b.style.backgroundRepeat='no-repeat';b.style.backgroundPosition='left top';" &
-                "var r=d.getElementById('appScreensResponsiveRoot');" &
-                "if(!r){r=d.createElement('div');r.id='appScreensResponsiveRoot';while(b.firstChild){r.appendChild(b.firstChild);}b.appendChild(r);}" &
-                "r.style.position='absolute';r.style.left='0px';r.style.top='0px';r.style.width='1024px';r.style.height='768px';r.style.overflow='hidden';" &
-                "r.style.transformOrigin='top left';r.style.msTransformOrigin='top left';r.style.transform='scale(" & scaleX & "," & scaleY & ")';r.style.msTransform='scale(" & scaleX & "," & scaleY & ")';" &
+                "b.style.backgroundSize='100% 100%';b.style.backgroundRepeat='no-repeat';b.style.backgroundPosition='left top';"
+
+            Dim scriptEscala As String
+            If modoResponsive <> "FIT" Then
+                scriptEscala =
+                    "var r=d.getElementById('appScreensResponsiveRoot');" &
+                    "if(!r){r=d.createElement('div');r.id='appScreensResponsiveRoot';while(b.firstChild){r.appendChild(b.firstChild);}b.appendChild(r);}" &
+                    "r.style.position='absolute';r.style.left='0px';r.style.top='0px';r.style.width='1024px';r.style.height='768px';r.style.overflow='hidden';" &
+                    "r.style.zoom='';r.style.transformOrigin='top left';r.style.msTransformOrigin='top left';r.style.transform='scale(" & scaleX & "," & scaleY & ")';r.style.msTransform='scale(" & scaleX & "," & scaleY & ")';"
+            Else
+                scriptEscala =
+                    "var r=d.getElementById('appScreensResponsiveRoot'),v=d.getElementById('appScreensResponsiveViewport');" &
+                    "if(!r){r=d.createElement('div');r.id='appScreensResponsiveRoot';while(b.firstChild){r.appendChild(b.firstChild);}}" &
+                    "if(!v){v=d.createElement('div');v.id='appScreensResponsiveViewport';b.appendChild(v);v.appendChild(r);}else if(r.parentNode!==v){v.appendChild(r);}" &
+                    "v.style.position='absolute';v.style.left='" & offsetX & "px';v.style.top='" & offsetY & "px';v.style.width='" & contenidoWidth.ToString(System.Globalization.CultureInfo.InvariantCulture) & "px';v.style.height='" & contenidoHeight.ToString(System.Globalization.CultureInfo.InvariantCulture) & "px';v.style.overflow='hidden';" &
+                    "r.style.position='absolute';r.style.left='0px';r.style.top='0px';r.style.width='1024px';r.style.height='768px';r.style.overflow='hidden';" &
+                    "r.style.transform='none';r.style.msTransform='none';r.style.zoom='" & escalaUniforme & "';"
+            End If
+
+            Dim script As String = scriptBase & scriptEscala &
                 "if(window.scrollTo){window.scrollTo(0,0);}" &
                 "})();"
 
             navegadorObjetivo.Document.InvokeScript("eval", New Object() {script})
+            Trace("Responsive aplicado: modo=" & If(modoResponsive = "FIT", "FIT", "AJUSTE_COMPLETO") &
+                  " viewport=" & viewportWidth.ToString() & "x" & viewportHeight.ToString() &
+                  " escala=" & If(modoResponsive = "FIT", escalaUniforme, scaleX & "x" & scaleY))
         Catch ex As Exception
             Trace("Error inyectando reescalado HTML: " & ex.Message)
         End Try
