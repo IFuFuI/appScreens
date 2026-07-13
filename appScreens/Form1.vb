@@ -98,6 +98,7 @@ Public Class Form1
     Dim bFastCashWaitActivo As Boolean = False
     Dim proteccionMontosRSTHasta As DateTime = DateTime.MinValue
     Dim proteccionMontosRSTPendienteHasta As DateTime = DateTime.MinValue
+    Dim retiroSinTarjetaWelcomeHasta As DateTime = DateTime.MinValue
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim baseScreenIsOnException As Boolean = False
@@ -616,6 +617,7 @@ Public Class Form1
     Private Sub ActivarProteccionMontosRST()
         proteccionMontosRSTHasta = DateTime.Now.AddSeconds(4)
         proteccionMontosRSTPendienteHasta = DateTime.MinValue
+        retiroSinTarjetaWelcomeHasta = DateTime.MinValue
         Trace("Proteccion Montos_RST activa por 4 segundos")
     End Sub
 
@@ -625,6 +627,21 @@ Public Class Form1
 
     Private Function ProteccionMontosRSTPendiente() As Boolean
         Return DateTime.Now <= proteccionMontosRSTPendienteHasta
+    End Function
+
+    Private Sub MarcarRetiroSinTarjetaDesdeWelcome()
+        retiroSinTarjetaWelcomeHasta = DateTime.Now.AddSeconds(8)
+        proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(3500)
+        Trace("Retiro sin tarjeta desde welcome detectado; se cubre transicion hacia Montos_RST")
+    End Sub
+
+    Private Sub LimpiarRetiroSinTarjetaDesdeWelcome()
+        retiroSinTarjetaWelcomeHasta = DateTime.MinValue
+        proteccionMontosRSTPendienteHasta = DateTime.MinValue
+    End Sub
+
+    Private Function RetiroSinTarjetaDesdeWelcomePendiente() As Boolean
+        Return DateTime.Now <= retiroSinTarjetaWelcomeHasta
     End Function
 
     Private Sub LoadHoleConfigFromIni(screenId As String)
@@ -908,9 +925,21 @@ Public Class Form1
 
                 Dim allowScreen As Boolean = True
 
-                If sValue = "300" AndAlso EsUrlWelcome(currentScreen) Then
-                    proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(900)
-                    Trace("Ventana breve Montos_RST pendiente tras 300 desde welcome")
+                If (sValue = "150" OrElse sData = "KEYPIN") AndAlso
+                   RetiroSinTarjetaDesdeWelcomePendiente() Then
+                    LimpiarRetiroSinTarjetaDesdeWelcome()
+                    Trace("Flujo PIN/tarjeta detectado; se cancela cobertura Montos_RST pendiente")
+                End If
+
+                If sValue = "300" AndAlso EsUrlWelcome(currentScreen) AndAlso
+                   RetiroSinTarjetaDesdeWelcomePendiente() Then
+                    proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(3500)
+                    Trace("Ventana Montos_RST pendiente tras 300 de retiro sin tarjeta")
+                End If
+
+                If sValue = "500" OrElse sValue = "welcome" OrElse
+                   sValue = "513" OrElse sValue = "hide" Then
+                    LimpiarRetiroSinTarjetaDesdeWelcome()
                 End If
 
                 If (sValue = "300" OrElse sValue = "701") AndAlso
@@ -1140,6 +1169,8 @@ Public Class Form1
             sPotition = "4" AndAlso
             currentScreen.ToLower().Contains("menumore")
         Dim esInicioRetiroFastCash As Boolean = EsRetiroEfectivoFdk7Actual(sPotition)
+        Dim esRetiroSinTarjetaWelcome As Boolean =
+            sPotition = "8" AndAlso EsUrlWelcome(currentScreen)
 
         Try
             dllInterfaceNdc.showScreenNDC(300)
@@ -1149,6 +1180,10 @@ Public Class Form1
 
         sCurrent = ""
         sCurrentData = ""
+
+        If esRetiroSinTarjetaWelcome Then
+            MarcarRetiroSinTarjetaDesdeWelcome()
+        End If
 
         Dim esExcepcion As Boolean = (pageException <> "" AndAlso pageException = sPotition)
         Dim esBack As Boolean = (fdkBack <> "" AndAlso fdkBack = sPotition)
@@ -1808,6 +1843,13 @@ Public Class Form1
             End If
 
             MostrarWaitRegreso()
+
+            If EsUrlWelcome(currentScreen) AndAlso
+               RetiroSinTarjetaDesdeWelcomePendiente() AndAlso
+               ProteccionMontosRSTPendiente() Then
+                Trace("300 de retiro sin tarjeta: wait como cobertura; se omite navegar WebBrowser a wait.html")
+                Exit Sub
+            End If
         ElseIf sValue = "701" AndAlso transicionMenuNdcPendiente Then
             Posponer701TransicionMenu()
             Exit Sub
