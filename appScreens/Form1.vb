@@ -1,6 +1,7 @@
 ﻿Imports System.IO
 Imports System.Net.Mime.MediaTypeNames
 Imports System.Security.Permissions
+Imports System.Text.RegularExpressions
 Imports System.Threading.Tasks
 
 <PermissionSet(SecurityAction.Demand, Name:="FullTrust")>
@@ -104,6 +105,9 @@ Public Class Form1
     Dim baseScreenIsOnException As Boolean = False
     Dim keepCustomErrorPageActive As Boolean = False ' Protege las pantallas de error
     Dim keepCancelPageActive As Boolean = False ' Protege la cancelacion custom hasta regresar a welcome
+    Dim pantallaHostReferenciaProtegida As String = ""
+    Dim urlHostReferenciaProtegida As String = ""
+    Dim proteccionHostReferenciaHasta As DateTime = DateTime.MinValue
 
     ' ============== Win32 API para región transparente ==============
     Private Declare Function CreateRectRgn Lib "gdi32" (ByVal X1 As Integer, ByVal Y1 As Integer, ByVal X2 As Integer, ByVal Y2 As Integer) As IntPtr
@@ -678,6 +682,37 @@ Public Class Form1
         Me.Hide()
     End Sub
 
+    Private Sub ActivarProteccionHostReferencia(pantalla As String, url As String)
+        pantallaHostReferenciaProtegida = pantalla
+        urlHostReferenciaProtegida = url
+        proteccionHostReferenciaHasta = DateTime.Now.AddSeconds(2)
+        Trace("Proteccion host referencia activa: pantalla=" & pantalla & " url=" & url)
+    End Sub
+
+    Private Sub LimpiarProteccionHostReferencia()
+        pantallaHostReferenciaProtegida = ""
+        urlHostReferenciaProtegida = ""
+        proteccionHostReferenciaHasta = DateTime.MinValue
+    End Sub
+
+    Private Function ProteccionHostReferenciaActiva() As Boolean
+        If pantallaHostReferenciaProtegida = "" Then Return False
+
+        If DateTime.Now > proteccionHostReferenciaHasta Then
+            Trace("Proteccion host referencia expirada: pantalla=" & pantallaHostReferenciaProtegida)
+            LimpiarProteccionHostReferencia()
+            Return False
+        End If
+
+        If urlHostReferenciaProtegida <> "" AndAlso currentScreen <> "" AndAlso
+           Not currentScreen.Equals(urlHostReferenciaProtegida, StringComparison.OrdinalIgnoreCase) Then
+            LimpiarProteccionHostReferencia()
+            Return False
+        End If
+
+        Return True
+    End Function
+
     Private Function EsUrlMenuHost(sUrl As String) As Boolean
         Try
             Dim urlLower As String = sUrl.Trim().ToLower()
@@ -698,9 +733,35 @@ Public Class Form1
             Return ReadIni(ndc.Layout.Replace("P", ""), "PAGE", ConfigManager.ScreensFile)
         End If
 
+        Dim pantallaHost As String = ExtraerPantallaHostDesdeReferencia(ndc)
+        If pantallaHost <> "" Then
+            Dim urlPantallaHost As String = ReadIni(pantallaHost, "PAGE", ConfigManager.ScreensFile)
+            If urlPantallaHost <> "" Then Return urlPantallaHost
+        End If
+
         If ndc.CodigoTransaccion <> "" Then
             Return ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
         End If
+
+        Return ""
+    End Function
+
+    Private Function ExtraerPantallaHostDesdeReferencia(ndc As MensajeNDC) As String
+        If ndc Is Nothing Then Return ""
+
+        Dim candidatos As String() = {ndc.Referencia, ndc.CodigoPresentacion}
+
+        For Each candidato In candidatos
+            If String.IsNullOrWhiteSpace(candidato) Then Continue For
+
+            Dim soloDigitos As String = Regex.Replace(candidato, "\D", "")
+            If soloDigitos.Length < 6 Then Continue For
+
+            If soloDigitos.EndsWith("701") Then
+                Dim pantalla As String = soloDigitos.Substring(soloDigitos.Length - 6, 3)
+                If pantalla <> "000" AndAlso pantalla <> "701" Then Return pantalla
+            End If
+        Next
 
         Return ""
     End Function
@@ -1410,6 +1471,9 @@ Public Class Form1
         Dim sPage As String = ""
         Dim contenido As String = ""
         Dim hostErrorEnLote As Boolean = False
+        Dim protegerHostReferenciaEnLote As Boolean = False
+        Dim pantallaHostReferenciaEnLote As String = ""
+        Dim urlHostReferenciaEnLote As String = ""
 
         For Each archivo In archivos
             If EsArchivoMsgObsoleto(archivo) Then
@@ -1449,6 +1513,13 @@ Public Class Form1
 
             Dim esFaltaDenominacion As Boolean = EsFaltaDenominacionHost(contenido)
             Dim urlHostCandidata As String = ResolverUrlHostNdc(ndc)
+            Dim pantallaHostReferencia As String = ExtraerPantallaHostDesdeReferencia(ndc)
+            Dim urlPantallaHostReferencia As String = ""
+            If pantallaHostReferencia <> "" Then
+                urlPantallaHostReferencia = ReadIni(pantallaHostReferencia, "PAGE", ConfigManager.ScreensFile)
+            End If
+            Dim usarPantallaHostReferencia As Boolean =
+                urlPantallaHostReferencia <> "" AndAlso Not EsUrlMenuHost(urlPantallaHostReferencia)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
             Dim esError As Boolean = False
             Dim textoHost As String = NormalizarTextoHost(contenido)
@@ -1459,7 +1530,16 @@ Public Class Form1
 
             If tieneRechazoHost OrElse tieneRespuestaNoExitosa Then
                 If Not esFaltaDenominacion Then
-                    If esMenuHostSegunIni Then
+                    If usarPantallaHostReferencia Then
+                        sPage = pantallaHostReferencia
+                        sUrl = urlPantallaHostReferencia
+                        bPantalla = True
+                        protegerHostReferenciaEnLote = True
+                        pantallaHostReferenciaEnLote = pantallaHostReferencia
+                        urlHostReferenciaEnLote = urlPantallaHostReferencia
+                        LoadHoleConfigFromIni(sPage)
+                        Trace("Host envio rechazo con pantalla " & sPage & " configurada; se permite HTML: " & sUrl)
+                    ElseIf esMenuHostSegunIni Then
                         Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
                     ElseIf contenido.Contains("TIPO DE TRANSACCION") Then
                         Trace("Encontro un error regresado por Host TIPO DE TRANSACCION; se oculta appScreens y no navega HTML local.")
@@ -1479,7 +1559,7 @@ Public Class Form1
                         End If
                     End If
 
-                    If Not esMenuHostSegunIni Then
+                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia Then
                         esError = True
                     End If
                 End If
@@ -1702,6 +1782,10 @@ Public Class Form1
             lastUrl = currentScreen
             currentScreen = sUrl
             bNDCPageActive = True
+
+            If protegerHostReferenciaEnLote Then
+                ActivarProteccionHostReferencia(pantallaHostReferenciaEnLote, urlHostReferenciaEnLote)
+            End If
 
             If EsNdcMontosRST(contenido, sUrl) Then
                 ActivarProteccionMontosRST()
@@ -1996,6 +2080,16 @@ Public Class Form1
         If sValue = "513" AndAlso keepCustomErrorPageActive Then
             Trace("513 ignorado proactivamente para mantener visible la pantalla de error custom.")
             Exit Sub
+        End If
+
+        If sValue = "513" AndAlso ProteccionHostReferenciaActiva() Then
+            Trace("513 ignorado para mantener pantalla NDC por referencia: pantalla=" &
+                  pantallaHostReferenciaProtegida & " url=" & urlHostReferenciaProtegida)
+            Exit Sub
+        End If
+
+        If sValue = "welcome" OrElse sValue = "500" OrElse sValue = "200" OrElse sValue = "hide" Then
+            LimpiarProteccionHostReferencia()
         End If
 
         If sValue = "welcome" Then
