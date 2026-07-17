@@ -100,6 +100,7 @@ Public Class Form1
     Dim proteccionMontosRSTHasta As DateTime = DateTime.MinValue
     Dim proteccionMontosRSTPendienteHasta As DateTime = DateTime.MinValue
     Dim retiroSinTarjetaWelcomeHasta As DateTime = DateTime.MinValue
+    Dim serviceOutController As ServiceOutController = Nothing
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim baseScreenIsOnException As Boolean = False
@@ -205,6 +206,7 @@ Public Class Form1
 
             AddHandler WebBrowser1.DocumentCompleted, AddressOf WebBrowser1_DocumentCompleted
             InicializarWaitRegreso()
+            serviceOutController = New ServiceOutController(Me, WebBrowser1)
             InstalarDetectorToqueRegreso()
         Catch ex As Exception
             Trace("Error al inicializar navegador local")
@@ -746,6 +748,27 @@ Public Class Form1
         Return ""
     End Function
 
+    Private Function ResolverPageHostNdc(ndc As MensajeNDC) As String
+        If ndc Is Nothing Then Return ""
+
+        If ndc.Layout <> "" Then
+            Dim layoutPage As String = ndc.Layout.Replace("P", "")
+            If ReadIni(layoutPage, "PAGE", ConfigManager.ScreensFile) <> "" Then Return layoutPage
+        End If
+
+        Dim pantallaHost As String = ExtraerPantallaHostDesdeReferencia(ndc)
+        If pantallaHost <> "" AndAlso ReadIni(pantallaHost, "PAGE", ConfigManager.ScreensFile) <> "" Then
+            Return pantallaHost
+        End If
+
+        If ndc.CodigoTransaccion <> "" AndAlso
+           ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile) <> "" Then
+            Return ndc.CodigoTransaccion
+        End If
+
+        Return ""
+    End Function
+
     Private Function ExtraerPantallaHostDesdeReferencia(ndc As MensajeNDC) As String
         If ndc Is Nothing Then Return ""
 
@@ -973,6 +996,11 @@ Public Class Form1
         Dim sPage As String = String.Empty
 
         Timer1.Enabled = False
+
+        If ServicioFueraDeOperacionActivo() Then
+            Timer1.Enabled = True
+            Exit Sub
+        End If
 
         sData = ReadIni("SCREENS", "DATA", ConfigManager.WorkFile)
         sValue = ReadIni("SCREENS", "NUM", ConfigManager.WorkFile)
@@ -1418,6 +1446,11 @@ Public Class Form1
 
         tmInterfasSuper.Enabled = False
 
+        If ServicioFueraDeOperacionActivo() Then
+            tmInterfasSuper.Enabled = True
+            Exit Sub
+        End If
+
         sDato = ReadIni("NDC", "EVENT", ConfigManager.strRutaInterface)
         sSuper = ReadIni("NDC", "SUPER", ConfigManager.strRutaInterface)
 
@@ -1459,6 +1492,12 @@ Public Class Form1
 
     Private Sub checkMsg_Tick(sender As Object, e As EventArgs) Handles checkMsg.Tick
         checkMsg.Enabled = False
+
+        If ServicioFueraDeOperacionActivo() Then
+            checkMsg.Enabled = True
+            Exit Sub
+        End If
+
         procesaDatosNDC()
         checkMsg.Enabled = True
     End Sub
@@ -1513,6 +1552,7 @@ Public Class Form1
 
             Dim esFaltaDenominacion As Boolean = EsFaltaDenominacionHost(contenido)
             Dim urlHostCandidata As String = ResolverUrlHostNdc(ndc)
+            Dim pageHostCandidata As String = ResolverPageHostNdc(ndc)
             Dim pantallaHostReferencia As String = ExtraerPantallaHostDesdeReferencia(ndc)
             Dim urlPantallaHostReferencia As String = ""
             If pantallaHostReferencia <> "" Then
@@ -1521,14 +1561,28 @@ Public Class Form1
             Dim usarPantallaHostReferencia As Boolean =
                 urlPantallaHostReferencia <> "" AndAlso Not EsUrlMenuHost(urlPantallaHostReferencia)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
+            Dim existePageHostCandidata As Boolean = urlHostCandidata <> ""
             Dim esError As Boolean = False
             Dim textoHost As String = NormalizarTextoHost(contenido)
             Dim codigoRechazo As String = ExtraerCodigoRechazoHost(contenido)
             Dim tieneRechazoHost As Boolean = textoHost.Contains("TRANSACCION RECHAZADA")
             Dim tieneRespuestaNoExitosa As Boolean =
                 Not String.IsNullOrWhiteSpace(ndc.codigoRespuesta) AndAlso ndc.codigoRespuesta <> "000"
+            Dim rechazoHostReal As Boolean =
+                tieneRechazoHost AndAlso (codigoRechazo = "" OrElse codigoRechazo <> "000")
+            Dim hostReportaProblema As Boolean = rechazoHostReal OrElse tieneRespuestaNoExitosa
 
             If tieneRechazoHost OrElse tieneRespuestaNoExitosa Then
+                Trace("Decision NDC host: txn=" & ndc.CodigoTransaccion &
+                      " layout=" & ndc.Layout &
+                      " rechazo=" & codigoRechazo &
+                      " respuesta=" & ndc.codigoRespuesta &
+                      " pageHost=" & pageHostCandidata &
+                      " urlHost=" & urlHostCandidata &
+                      " hostProblema=" & hostReportaProblema.ToString())
+            End If
+
+            If hostReportaProblema Then
                 If Not esFaltaDenominacion Then
                     If usarPantallaHostReferencia Then
                         sPage = pantallaHostReferencia
@@ -1541,6 +1595,12 @@ Public Class Form1
                         Trace("Host envio rechazo con pantalla " & sPage & " configurada; se permite HTML: " & sUrl)
                     ElseIf esMenuHostSegunIni Then
                         Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
+                    ElseIf existePageHostCandidata Then
+                        sPage = pageHostCandidata
+                        sUrl = urlHostCandidata
+                        bPantalla = True
+                        LoadHoleConfigFromIni(sPage)
+                        Trace("Host envio rechazo/codigo no-000 con PAGE configurada; se permite HTML fallback: " & sPage & " => " & sUrl)
                     ElseIf contenido.Contains("TIPO DE TRANSACCION") Then
                         Trace("Encontro un error regresado por Host TIPO DE TRANSACCION; se oculta appScreens y no navega HTML local.")
 
@@ -1559,7 +1619,7 @@ Public Class Form1
                         End If
                     End If
 
-                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia Then
+                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia AndAlso Not existePageHostCandidata Then
                         esError = True
                     End If
                 End If
@@ -2334,6 +2394,11 @@ Public Class Form1
 
     Private Sub tmOut_Tick(sender As Object, e As EventArgs) Handles tmOut.Tick
         tmOut.Enabled = False
+
+        If ServicioFueraDeOperacionActivo() Then
+            Exit Sub
+        End If
+
         Trace("Timeout de appScreens")
         Me.Hide()
         writeINI("APP", "TIMEOUT", "ON", ConfigManager.WorkFile)
@@ -2353,12 +2418,24 @@ Public Class Form1
 
     Private Sub tmMsgDevices_Tick(sender As Object, e As EventArgs) Handles tmMsgDevices.Tick
         tmMsgDevices.Enabled = False
+
+        If ServicioFueraDeOperacionActivo() Then
+            tmMsgDevices.Enabled = True
+            Exit Sub
+        End If
+
         checkEstusImpresora()
         checkEstusCdm()
         checkEstusCassettes()
         killSupervisor()
         tmMsgDevices.Enabled = True
     End Sub
+
+    Private Function ServicioFueraDeOperacionActivo() As Boolean
+        If serviceOutController Is Nothing Then Return False
+
+        Return serviceOutController.RevisarEstado()
+    End Function
 
     Private Sub checkEstusImpresora()
         Dim sEstatusPtr As String = ReadIni("PTR STATUS", "fwDevice", ConfigManager.workFileDevices).Trim().ToUpper()
