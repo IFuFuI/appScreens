@@ -40,8 +40,9 @@ Module Module1
 
         Try
             sTrace = ReadIni("TRACE", "SCREENS", ConfigManager.ConfigFile)
-            If sTrace = "TRUE" Then
-                Dim logDir As String = "C:\appMain\log"
+            If sTrace.Trim().Equals("TRUE", StringComparison.OrdinalIgnoreCase) Then
+                Dim logDir As String = ConfigManager.LogPath
+                If String.IsNullOrWhiteSpace(logDir) Then logDir = "C:\appMain\log\"
                 If Not Directory.Exists(logDir) Then Directory.CreateDirectory(logDir)
 
                 Dim prefix As String = Format(Now(), "dd-MM-yyyy HH:mm:ss.fff tt") &
@@ -83,7 +84,7 @@ Module Module1
         Dim sRetur As String = ""
         '
         Try
-            sRetVal = New String(Chr(0), 255)
+            sRetVal = New String(Chr(0), 4000)
             '
             ret = GetPrivateProfileString(seccion, Campo, "", sRetVal, Len(sRetVal), strFile)
             sRetur = Left(sRetVal, ret)

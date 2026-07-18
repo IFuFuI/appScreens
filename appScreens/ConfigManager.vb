@@ -16,7 +16,7 @@ Public Class ConfigManager
 
     Public Shared ReadOnly Property workFileDevices As String
         Get
-            Return GetConfigValue("WorkFile", "C:\appMain\work\Device_Status.ini")
+            Return GetConfigValue("WorkFileDevices", "C:\appMain\work\Device_Status.ini")
         End Get
     End Property
 
