@@ -1036,6 +1036,17 @@ Public Class Form1
              (textoHost.Contains("RECHAZO RETIRO") AndAlso textoHost.Contains("SIN EFECTIVO")))
     End Function
 
+    Private Function EsFallbackPagoCreditoConErrorNativo(ndc As MensajeNDC, urlHostCandidata As String) As Boolean
+        If ndc Is Nothing Then Return False
+
+        Dim respuestaNoExitosa As Boolean =
+            Not String.IsNullOrWhiteSpace(ndc.codigoRespuesta) AndAlso ndc.codigoRespuesta <> "000"
+        Dim urlFallback As String = If(urlHostCandidata, "").Trim().ToLower()
+        Dim esPagoCredito357 As Boolean = urlFallback.EndsWith("pagocredito-357.html")
+
+        Return respuestaNoExitosa AndAlso esPagoCredito357
+    End Function
+
     Private Function ExtraerCodigoRechazoHost(contenido As String) As String
         If String.IsNullOrWhiteSpace(contenido) Then Return ""
 
@@ -1675,6 +1686,7 @@ Public Class Form1
             Dim rechazoHostReal As Boolean =
                 tieneRechazoHost AndAlso (codigoRechazo = "" OrElse codigoRechazo <> "000")
             Dim hostReportaProblema As Boolean = rechazoHostReal OrElse tieneRespuestaNoExitosa
+            Dim esFallbackPagoCreditoNativo As Boolean = EsFallbackPagoCreditoConErrorNativo(ndc, urlHostCandidata)
 
             If tieneRechazoHost OrElse tieneRespuestaNoExitosa Then
                 Trace("Decision NDC host: txn=" & ndc.CodigoTransaccion &
@@ -1688,7 +1700,10 @@ Public Class Form1
 
             If hostReportaProblema Then
                 If Not esFaltaDenominacion Then
-                    If usarPantallaHostReferencia Then
+                    If esFallbackPagoCreditoNativo Then
+                        esError = True
+                        Trace("Host rechazo PagoCredito-357; se omite PAGE fallback para no montar HTML sobre APTRA.")
+                    ElseIf usarPantallaHostReferencia Then
                         sPage = pantallaHostReferencia
                         sUrl = urlPantallaHostReferencia
                         bPantalla = True
