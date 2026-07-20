@@ -1,5 +1,6 @@
 ﻿Imports System.IO
 Imports System.Net.Mime.MediaTypeNames
+Imports System.Collections.Generic
 Imports System.Security.Permissions
 Imports System.Text.RegularExpressions
 Imports System.Threading.Tasks
@@ -78,8 +79,14 @@ Public Class Form1
     Dim timerOcultarWaitRegreso As Timer = Nothing
     Dim timerOcultarWaitTimeout As Timer = Nothing
     Dim timerOcultarReadCardWelcome As Timer = Nothing
+    Dim timerReintentoMediaIdioma As Timer = Nothing
     Dim toqueRegresoNativoDetectado As Boolean = False
     Dim idCoberturaRender As Integer = 0
+    Private Const READCARD_WELCOME_FALLBACK_MS As Integer = 8000
+    Private Const MEDIA_RETRY_INTERVAL_MS As Integer = 500
+    Private Const MEDIA_RETRY_MAX_TICKS As Integer = 30
+    Dim reemplazosMediaPendientes As New List(Of Tuple(Of String, String))()
+    Dim reintentosMediaPendientes As Integer = 0
 
     Dim omitirProximo701 As Boolean = False
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
@@ -404,8 +411,12 @@ Public Class Form1
             AddHandler timerOcultarWaitTimeout.Tick, AddressOf TimerOcultarWaitTimeout_Tick
 
             timerOcultarReadCardWelcome = New Timer()
-            timerOcultarReadCardWelcome.Interval = 3000
+            timerOcultarReadCardWelcome.Interval = READCARD_WELCOME_FALLBACK_MS
             AddHandler timerOcultarReadCardWelcome.Tick, AddressOf TimerOcultarReadCardWelcome_Tick
+
+            timerReintentoMediaIdioma = New Timer()
+            timerReintentoMediaIdioma.Interval = MEDIA_RETRY_INTERVAL_MS
+            AddHandler timerReintentoMediaIdioma.Tick, AddressOf TimerReintentoMediaIdioma_Tick
 
             webBrowserWaitRegreso.Navigate(sWaitUrl)
             Trace("Precargando wait de regreso: " & sWaitUrl)
@@ -448,6 +459,8 @@ Public Class Form1
             WebBrowser1.Visible = UsarCoberturaSinOcultarPrincipal()
             webBrowserWaitRegreso.Visible = True
             webBrowserWaitRegreso.BringToFront()
+            AplicarResponsiveHtml(webBrowserWaitRegreso)
+            AplicarFondoTransicionalPorIdioma(webBrowserWaitRegreso)
             Trace("024: formulario oculto preparado para abrir directamente con wait.html")
         Catch ex As Exception
             Trace("Error preparando primera capa de wait: " & ex.Message)
@@ -474,6 +487,8 @@ Public Class Form1
             Me.Show()
             Me.BringToFront()
             Me.Update()
+            AplicarResponsiveHtml(webBrowserWaitRegreso)
+            AplicarFondoTransicionalPorIdioma(webBrowserWaitRegreso)
             Trace("TRANSICION cobertura visible id=" & idCoberturaRender.ToString())
             Return True
         Catch ex As Exception
@@ -560,11 +575,24 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub TimerReintentoMediaIdioma_Tick(sender As Object, e As EventArgs)
+        ReintentarReemplazosMediaPendientes()
+    End Sub
+
     Private Sub WebBrowserWaitRegreso_DocumentCompleted(sender As Object, e As WebBrowserDocumentCompletedEventArgs)
         Try
             If webBrowserWaitRegreso IsNot Nothing AndAlso webBrowserWaitRegreso.Url IsNot Nothing AndAlso
                e.Url.AbsolutePath = webBrowserWaitRegreso.Url.AbsolutePath Then
+                Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile).Trim()
+                If sWaitUrl = "" OrElse Not webBrowserWaitRegreso.Url.IsFile OrElse
+                   Not String.Equals(Path.GetFullPath(webBrowserWaitRegreso.Url.LocalPath),
+                                     Path.GetFullPath(sWaitUrl),
+                                     StringComparison.OrdinalIgnoreCase) Then
+                    Exit Sub
+                End If
+
                 AplicarResponsiveHtml(webBrowserWaitRegreso)
+                AplicarFondoTransicionalPorIdioma(webBrowserWaitRegreso)
                 waitRegresoCargado = True
                 Trace("wait.html de regreso precargado")
             End If
@@ -1036,17 +1064,6 @@ Public Class Form1
              (textoHost.Contains("RECHAZO RETIRO") AndAlso textoHost.Contains("SIN EFECTIVO")))
     End Function
 
-    Private Function EsFallbackPagoCreditoConErrorNativo(ndc As MensajeNDC, urlHostCandidata As String) As Boolean
-        If ndc Is Nothing Then Return False
-
-        Dim respuestaNoExitosa As Boolean =
-            Not String.IsNullOrWhiteSpace(ndc.codigoRespuesta) AndAlso ndc.codigoRespuesta <> "000"
-        Dim urlFallback As String = If(urlHostCandidata, "").Trim().ToLower()
-        Dim esPagoCredito357 As Boolean = urlFallback.EndsWith("pagocredito-357.html")
-
-        Return respuestaNoExitosa AndAlso esPagoCredito357
-    End Function
-
     Private Function ExtraerCodigoRechazoHost(contenido As String) As String
         If String.IsNullOrWhiteSpace(contenido) Then Return ""
 
@@ -1092,14 +1109,13 @@ Public Class Form1
             sData = ReadIni("SCREENS", "DATA", ConfigManager.WorkFile).Trim()
             sValue = ReadIni("SCREENS", "NUM", ConfigManager.WorkFile).Trim()
 
-            If coberturaTarjetaWelcomeActiva AndAlso
-               (sValue = "150" OrElse sData = "KEYPIN") Then
-
-                FinalizarCoberturaTarjetaWelcome(If(sValue = "150", "150", "KEYPIN"))
-
+            If coberturaTarjetaWelcomeActiva Then
                 If sValue = "150" Then
-                    writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
-                    sValue = ""
+                    coberturaTarjetaWelcomeActiva = False
+                    If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
+                    Trace("ReadCard desde welcome finalizado: origen=150; entregando cobertura al selector")
+                ElseIf sData = "KEYPIN" Then
+                    FinalizarCoberturaTarjetaWelcome("KEYPIN")
                 End If
             End If
 
@@ -1475,6 +1491,10 @@ Public Class Form1
                 Else
                     sretur = "ES" ' Por defecto Espanol
                 End If
+            Case "idiomaSeleccionado", "IDIOMA_SELECCIONADO", "idiomaATMSeleccionado"
+                sretur = If(IdiomaFueSeleccionado(), "1", "0")
+            Case "idiomaVisual", "IDIOMA_VISUAL"
+                sretur = ObtenerCarpetaIdiomaVisualTransicional()
             ' --- FIN MULTILENGUAJE ---
             Case "B" : sretur = ndcB
             Case "C" : sretur = ndcC
@@ -1676,7 +1696,6 @@ Public Class Form1
             Dim usarPantallaHostReferencia As Boolean =
                 urlPantallaHostReferencia <> "" AndAlso Not EsUrlMenuHost(urlPantallaHostReferencia)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
-            Dim existePageHostCandidata As Boolean = urlHostCandidata <> ""
             Dim esError As Boolean = False
             Dim textoHost As String = NormalizarTextoHost(contenido)
             Dim codigoRechazo As String = ExtraerCodigoRechazoHost(contenido)
@@ -1686,7 +1705,6 @@ Public Class Form1
             Dim rechazoHostReal As Boolean =
                 tieneRechazoHost AndAlso (codigoRechazo = "" OrElse codigoRechazo <> "000")
             Dim hostReportaProblema As Boolean = rechazoHostReal OrElse tieneRespuestaNoExitosa
-            Dim esFallbackPagoCreditoNativo As Boolean = EsFallbackPagoCreditoConErrorNativo(ndc, urlHostCandidata)
 
             If tieneRechazoHost OrElse tieneRespuestaNoExitosa Then
                 Trace("Decision NDC host: txn=" & ndc.CodigoTransaccion &
@@ -1700,10 +1718,7 @@ Public Class Form1
 
             If hostReportaProblema Then
                 If Not esFaltaDenominacion Then
-                    If esFallbackPagoCreditoNativo Then
-                        esError = True
-                        Trace("Host rechazo PagoCredito-357; se omite PAGE fallback para no montar HTML sobre APTRA.")
-                    ElseIf usarPantallaHostReferencia Then
+                    If usarPantallaHostReferencia Then
                         sPage = pantallaHostReferencia
                         sUrl = urlPantallaHostReferencia
                         bPantalla = True
@@ -1714,12 +1729,6 @@ Public Class Form1
                         Trace("Host envio rechazo con pantalla " & sPage & " configurada; se permite HTML: " & sUrl)
                     ElseIf esMenuHostSegunIni Then
                         Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
-                    ElseIf existePageHostCandidata Then
-                        sPage = pageHostCandidata
-                        sUrl = urlHostCandidata
-                        bPantalla = True
-                        LoadHoleConfigFromIni(sPage)
-                        Trace("Host envio rechazo/codigo no-000 con PAGE configurada; se permite HTML fallback: " & sPage & " => " & sUrl)
                     ElseIf contenido.Contains("TIPO DE TRANSACCION") Then
                         Trace("Encontro un error regresado por Host TIPO DE TRANSACCION; se oculta appScreens y no navega HTML local.")
 
@@ -1738,7 +1747,7 @@ Public Class Form1
                         End If
                     End If
 
-                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia AndAlso Not existePageHostCandidata Then
+                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia Then
                         esError = True
                     End If
                 End If
@@ -1879,7 +1888,11 @@ Public Class Form1
                 End If
             End If
 
-            If sUrl <> "" AndAlso EsUrlMenuHost(sUrl) AndAlso contenido.Contains("CODIGO RESPUESTA 000") Then
+            Dim hostRegresoAMenuExitoso As Boolean =
+                ndc.codigoRespuesta = "000" AndAlso
+                ((sUrl <> "" AndAlso EsUrlMenuHost(sUrl)) OrElse EsUrlMenuHost(urlHostCandidata))
+
+            If hostRegresoAMenuExitoso Then
                 If isHostError OrElse isExpetionClosePageNDC OrElse pageException <> "" Then
                     Trace("Host regreso a menu exitoso; limpiando bandera de error host")
                 End If
@@ -2079,7 +2092,6 @@ Public Class Form1
                     Dim langFolder As String = "ES" ' Por defecto espanol
                     If sIdAct = "I" Then langFolder = "EN"
                     If sIdAct = "M" Then langFolder = "MY"
-
                     Dim rutaBase As String = "C:\appMain\html\Media\"
                     Dim nombreBase As String = "Pic" & sImagen.PadLeft(3, "0"c)
 
@@ -2263,14 +2275,6 @@ Public Class Form1
 
         pageException = ""
 
-        ' >>> HACK TEMPORAL PARA PRUEBAS DESDE EL INI (SE EJECUTA SIEMPRE) <<<
-        ' Verificar si el usuario cambio el idioma manualmente en el INI
-        Dim testLangFromIni As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile)
-        If testLangFromIni = "I" OrElse testLangFromIni = "M" Then
-            GuardarIdiomaSeleccionado(testLangFromIni)
-        End If
-        ' >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
         If sValue = "welcome" OrElse sValue = "500" OrElse sValue = "hide" Then
             keepCancelPageActive = False
         End If
@@ -2306,6 +2310,7 @@ Public Class Form1
 
             ' --- INICIO MULTILENGUAJE: Limpiar idioma al regresar a la pantalla de inicio ---
             writeINI("LG", "RESULT", "", ConfigManager.WorkFile)
+            writeINI("LG", "SELECTED", "", ConfigManager.WorkFile)
 
             ' Restaurar TODAS las imagenes al idioma por defecto (ES) masivamente
             Dim rutaBase As String = "C:\appMain\html\Media\"
@@ -2317,11 +2322,7 @@ Public Class Form1
                     For Each archivo In archivosES
                         Dim nombreArchivo As String = Path.GetFileName(archivo)
                         Dim archivoDestino As String = Path.Combine(rutaBase, nombreArchivo)
-                        Try
-                            File.Copy(archivo, archivoDestino, True)
-                        Catch ex As Exception
-                            Trace("Error restaurando imagen ES: " & nombreArchivo & " - " & ex.Message)
-                        End Try
+                        CopiarArchivoIdiomaConReintentos(archivo, archivoDestino)
                     Next
                     Trace("Imagenes restauradas masivamente a Espanol (ES) en el reset de sesion.")
                 End If
@@ -2337,11 +2338,7 @@ Public Class Form1
                     For Each archivo In archivosGlobal
                         Dim nombreArchivo As String = Path.GetFileName(archivo)
                         Dim archivoDestino As String = Path.Combine(rutaBase, nombreArchivo)
-                        Try
-                            File.Copy(archivo, archivoDestino, True)
-                        Catch ex As Exception
-                            Trace("Error restaurando imagen GLOBAL: " & nombreArchivo & " - " & ex.Message)
-                        End Try
+                        CopiarArchivoIdiomaConReintentos(archivo, archivoDestino)
                     Next
                     Trace("Imagenes globales restauradas en el reset de sesion.")
                 End If
@@ -2385,6 +2382,12 @@ Public Class Form1
             End If
         ElseIf sValue = "701" Then
             bNDCPageActive = False
+            If isHostError AndAlso (EsUrlMenuHost(currentScreen) OrElse EsUrlMenuHost(sMenuActivo) OrElse EsUrlMenuHost(sLastMenuUrl)) Then
+                isHostError = False
+                isExpetionClosePageNDC = False
+                pageException = ""
+                Trace("701/menu: limpiando error host para restaurar opciones del menu")
+            End If
             Trace("Estado 701 recibido; se conserva memoria de errores y menu activo")
         End If
 
@@ -2530,6 +2533,10 @@ Public Class Form1
                     currentScreen = sUrlFinal
                 End If
 
+                If sValue = "150" Then
+                    MostrarCoberturaInmediataSelectorIdioma()
+                End If
+
                 Trace("Navega page Url: " + sUrlFinal)
                 bNDCPageActive = False
 
@@ -2577,6 +2584,30 @@ Public Class Form1
             End If
         Catch ex As Exception
             Trace("Error ProcesarPantalla: " + ex.Message)
+        End Try
+    End Sub
+
+    Private Sub MostrarCoberturaInmediataSelectorIdioma()
+        Try
+            RestoreFullRegion()
+
+            If webBrowserWaitRegreso IsNot Nothing Then
+                webBrowserWaitRegreso.Visible = False
+            End If
+            waitRegresoActivo = False
+
+            If WebBrowser1 IsNot Nothing Then
+                WebBrowser1.Visible = True
+                WebBrowser1.BringToFront()
+            End If
+
+            Me.Show()
+            Me.TopMost = True
+            Me.BringToFront()
+            Me.Update()
+            Trace("Selector idioma: cobertura inmediata antes de cargar HTML")
+        Catch ex As Exception
+            Trace("Error mostrando cobertura inmediata del selector de idioma: " & ex.Message, 2)
         End Try
     End Sub
 
@@ -2633,6 +2664,10 @@ Public Class Form1
         If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
         tmMsgDevices.Enabled = False
         Me.Hide()
+
+        If reemplazosMediaPendientes.Count > 0 Then
+            ReintentarReemplazosMediaPendientes()
+        End If
 
         If regresoNativo024Activo Then
             DejarWaitComoPrimeraCapaOculta()
@@ -2968,6 +3003,274 @@ Public Class Form1
         Trace("Cerrando appScreens")
     End Sub
 
+    Private Function IdiomaFueSeleccionado() As Boolean
+        Try
+            Dim seleccionado As String = ReadIni("LG", "SELECTED", ConfigManager.WorkFile).Trim()
+            If seleccionado = "1" Then Return True
+
+            Dim idioma As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile).Trim().ToUpper()
+            Return idioma = "I" OrElse idioma = "M"
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Function ObtenerCarpetaIdiomaVisualTransicional() As String
+        If Not IdiomaFueSeleccionado() Then Return "GLOBAL"
+
+        Dim idioma As String = ReadIni("LG", "RESULT", ConfigManager.WorkFile).Trim().ToUpper()
+        If idioma = "I" Then Return "EN"
+        If idioma = "M" Then Return "MY"
+        Return "ES"
+    End Function
+
+    Private Sub AplicarFondoTransicionalPorIdioma(Optional navegador As WebBrowser = Nothing)
+        Try
+            Dim navegadorObjetivo As WebBrowser = navegador
+            If navegadorObjetivo Is Nothing Then navegadorObjetivo = WebBrowser1
+            If navegadorObjetivo Is Nothing OrElse navegadorObjetivo.Document Is Nothing OrElse navegadorObjetivo.Url Is Nothing Then Exit Sub
+
+            Dim nombrePagina As String = Path.GetFileName(navegadorObjetivo.Url.LocalPath).ToLower()
+            Dim pic As String = ""
+            Dim funcionFondo As String = ""
+
+            If nombrePagina = "wait.html" Then
+                pic = "Pic101.png"
+                funcionFondo = "aplicarFondoWaitDirecto"
+            ElseIf nombrePagina = "readcard.html" Then
+                pic = "Pic501.png"
+                funcionFondo = "aplicarFondoReadCard"
+            Else
+                Exit Sub
+            End If
+
+            Dim carpetaIdioma As String = ObtenerCarpetaIdiomaVisualTransicional()
+            Dim fondoIdioma As String = "../Media/" & carpetaIdioma & "/" & pic
+            Dim fondoBase As String = "../Media/" & pic
+            Dim fondoEs As String = "../Media/ES/" & pic
+            Dim idiomaStorage As String = carpetaIdioma
+            If idiomaStorage = "GLOBAL" Then idiomaStorage = ""
+            Dim script As String =
+                "(function(){" &
+                "var aplicar=function(){" &
+                "var b=document.body;if(!b){return;}" &
+                "b.setAttribute('data-appscreens-idioma-visual','" & carpetaIdioma & "');" &
+                "try{if(window.localStorage){if('" & carpetaIdioma & "'==='GLOBAL'){localStorage.setItem('idiomaATMSeleccionado','0');localStorage.removeItem('idiomaATM');}else{localStorage.setItem('idiomaATMSeleccionado','1');localStorage.setItem('idiomaATM','" & idiomaStorage & "');}}}catch(ex){}" &
+                "try{if(window.sessionStorage){if('" & carpetaIdioma & "'==='GLOBAL'){sessionStorage.setItem('idiomaATMSeleccionado','0');sessionStorage.removeItem('idiomaATM');}else{sessionStorage.setItem('idiomaATMSeleccionado','1');sessionStorage.setItem('idiomaATM','" & idiomaStorage & "');}}}catch(ex){}" &
+                "try{if('" & carpetaIdioma & "'==='GLOBAL'){document.cookie='idiomaATMSeleccionado=0; path=/';document.cookie='idiomaATM=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';}else{document.cookie='idiomaATMSeleccionado=1; path=/';document.cookie='idiomaATM=" & idiomaStorage & "; path=/';}}catch(ex){}" &
+                "b.style.backgroundImage=""url('" & fondoIdioma & "'), url('" & fondoBase & "'), url('" & fondoEs & "')"";" &
+                "b.style.backgroundSize='100% 100%';" &
+                "b.style.backgroundPosition='left top';" &
+                "b.style.backgroundRepeat='no-repeat';" &
+                "};" &
+                "try{window['" & funcionFondo & "']=aplicar;}catch(ex){}" &
+                "aplicar();" &
+                "try{window.setTimeout(aplicar,50);window.setTimeout(aplicar,150);window.setTimeout(aplicar,650);window.setTimeout(aplicar,1200);}catch(ex){}" &
+                "})();"
+
+            navegadorObjetivo.Document.InvokeScript("eval", New Object() {script})
+            Trace("Fondo transicional aplicado: pagina=" & nombrePagina & " carpeta=" & carpetaIdioma)
+        Catch ex As Exception
+            Trace("Error aplicando fondo transicional por idioma: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub LimpiarReferenciasMediaEnNavegador(navegador As WebBrowser, nombre As String)
+        Try
+            If navegador Is Nothing OrElse navegador.Document Is Nothing Then Exit Sub
+
+            Dim script As String =
+                "(function(){" &
+                "try{if(window.stop){window.stop();}}catch(ex){}" &
+                "try{var imgs=document.images||[];for(var i=0;i<imgs.length;i++){imgs[i].src='about:blank';}}catch(ex){}" &
+                "try{if(document.body){document.body.style.backgroundImage='none';document.body.innerHTML='';}}catch(ex){}" &
+                "try{if(document.documentElement){document.documentElement.style.backgroundImage='none';}}catch(ex){}" &
+                "})();"
+
+            navegador.Document.InvokeScript("eval", New Object() {script})
+            Trace("Referencias Media liberadas en navegador: " & nombre)
+        Catch ex As Exception
+            Trace("Error limpiando referencias Media en " & nombre & ": " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub LiberarRecursosMediaParaCambioIdioma(Optional liberarPrincipalSiempre As Boolean = False)
+        Try
+            If webBrowserWaitRegreso IsNot Nothing Then
+                LimpiarReferenciasMediaEnNavegador(webBrowserWaitRegreso, "waitRegreso")
+                waitRegresoCargado = False
+                waitRegresoActivo = False
+                webBrowserWaitRegreso.Visible = False
+                webBrowserWaitRegreso.Stop()
+                webBrowserWaitRegreso.Navigate("about:blank")
+            End If
+
+            If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing Then
+                Dim paginaActual As String = WebBrowser1.Url.LocalPath.ToLower()
+                If liberarPrincipalSiempre OrElse paginaActual.Contains("readcard.html") OrElse paginaActual.Contains("wait.html") Then
+                    LimpiarReferenciasMediaEnNavegador(WebBrowser1, "principal")
+                    WebBrowser1.Stop()
+                    WebBrowser1.Navigate("about:blank")
+                End If
+            End If
+
+            System.Windows.Forms.Application.DoEvents()
+            Threading.Thread.Sleep(120)
+            System.Windows.Forms.Application.DoEvents()
+            GC.Collect()
+            GC.WaitForPendingFinalizers()
+        Catch ex As Exception
+            Trace("Error liberando recursos Media para cambio de idioma: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function IntentarReemplazoArchivoIdioma(archivoOrigen As String, archivoDestino As String, ByRef detalleError As String) As Boolean
+        Dim archivoTemporal As String = ""
+
+        Try
+            If File.Exists(archivoDestino) Then
+                File.SetAttributes(archivoDestino, FileAttributes.Normal)
+            End If
+
+            File.Copy(archivoOrigen, archivoDestino, True)
+            Return True
+        Catch ex As Exception When TypeOf ex Is IOException OrElse TypeOf ex Is UnauthorizedAccessException
+            detalleError = ex.Message
+        Catch ex As Exception
+            detalleError = ex.Message
+            Return False
+        End Try
+
+        Try
+            archivoTemporal = archivoDestino & ".tmp_" & Guid.NewGuid().ToString("N")
+            File.Copy(archivoOrigen, archivoTemporal, True)
+
+            If File.Exists(archivoDestino) Then
+                Try
+                    File.Replace(archivoTemporal, archivoDestino, Nothing, True)
+                    Return True
+                Catch exReplace As Exception
+                    detalleError = exReplace.Message
+
+                    Try
+                        File.Delete(archivoDestino)
+                        File.Move(archivoTemporal, archivoDestino)
+                        Return True
+                    Catch exMove As Exception
+                        detalleError = detalleError & " / " & exMove.Message
+                    End Try
+                End Try
+            Else
+                File.Move(archivoTemporal, archivoDestino)
+                Return True
+            End If
+        Catch ex As Exception
+            detalleError = ex.Message
+        Finally
+            Try
+                If archivoTemporal <> "" AndAlso File.Exists(archivoTemporal) Then
+                    File.Delete(archivoTemporal)
+                End If
+            Catch ex As Exception
+            End Try
+        End Try
+
+        Return False
+    End Function
+
+    Private Sub RegistrarReemplazoMediaPendiente(archivoOrigen As String, archivoDestino As String, motivo As String)
+        Try
+            For i As Integer = reemplazosMediaPendientes.Count - 1 To 0 Step -1
+                If String.Equals(reemplazosMediaPendientes(i).Item2, archivoDestino, StringComparison.OrdinalIgnoreCase) Then
+                    reemplazosMediaPendientes.RemoveAt(i)
+                End If
+            Next
+
+            reemplazosMediaPendientes.Add(Tuple.Create(archivoOrigen, archivoDestino))
+            reintentosMediaPendientes = 0
+
+            If timerReintentoMediaIdioma IsNot Nothing Then
+                timerReintentoMediaIdioma.Stop()
+                timerReintentoMediaIdioma.Start()
+            End If
+
+            Trace("Reemplazo Media pendiente: " & Path.GetFileName(archivoDestino) & " motivo=" & motivo)
+        Catch ex As Exception
+            Trace("Error registrando reemplazo Media pendiente: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub ReintentarReemplazosMediaPendientes()
+        Try
+            If reemplazosMediaPendientes.Count = 0 Then
+                If timerReintentoMediaIdioma IsNot Nothing Then timerReintentoMediaIdioma.Stop()
+                Return
+            End If
+
+            reintentosMediaPendientes += 1
+            LiberarRecursosMediaParaCambioIdioma(Not Me.Visible)
+
+            For i As Integer = reemplazosMediaPendientes.Count - 1 To 0 Step -1
+                Dim pendiente = reemplazosMediaPendientes(i)
+                Dim detalle As String = ""
+
+                If IntentarReemplazoArchivoIdioma(pendiente.Item1, pendiente.Item2, detalle) Then
+                    Trace("Reemplazo Media pendiente recuperado: " & Path.GetFileName(pendiente.Item2))
+                    reemplazosMediaPendientes.RemoveAt(i)
+                ElseIf reintentosMediaPendientes >= MEDIA_RETRY_MAX_TICKS Then
+                    Trace("Reemplazo Media pendiente no liberado: " & Path.GetFileName(pendiente.Item2) & " - " & detalle)
+                    reemplazosMediaPendientes.RemoveAt(i)
+                End If
+            Next
+
+            If reemplazosMediaPendientes.Count = 0 Then
+                If timerReintentoMediaIdioma IsNot Nothing Then timerReintentoMediaIdioma.Stop()
+                Trace("Reemplazos Media pendientes completados")
+            End If
+        Catch ex As Exception
+            Trace("Error reintentando reemplazos Media pendientes: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function CopiarArchivoIdiomaConReintentos(archivoOrigen As String, archivoDestino As String) As Boolean
+        Dim nombreArchivo As String = Path.GetFileName(archivoOrigen)
+
+        For intento As Integer = 1 To 12
+            Try
+                Dim detalle As String = ""
+                If Not IntentarReemplazoArchivoIdioma(archivoOrigen, archivoDestino, detalle) Then
+                    Throw New IOException(detalle)
+                End If
+
+                If intento > 1 Then
+                    Trace("Reemplazo recuperado tras reintento " & intento.ToString() & ": " & nombreArchivo)
+                End If
+                Return True
+            Catch ex As Exception When TypeOf ex Is IOException OrElse TypeOf ex Is UnauthorizedAccessException
+                If intento = 1 Then
+                    Trace("Archivo en uso al reemplazar " & nombreArchivo & "; liberando recursos y reintentando.")
+                    LiberarRecursosMediaParaCambioIdioma()
+                Else
+                    System.Windows.Forms.Application.DoEvents()
+                    Threading.Thread.Sleep(150)
+                    System.Windows.Forms.Application.DoEvents()
+                    GC.Collect()
+                    GC.WaitForPendingFinalizers()
+                End If
+
+                If intento = 12 Then
+                    Trace("No se pudo reemplazar " & nombreArchivo & " despues de reintentos: " & ex.Message)
+                    RegistrarReemplazoMediaPendiente(archivoOrigen, archivoDestino, ex.Message)
+                End If
+            Catch ex As Exception
+                Trace("Error reemplazando masivamente: " & nombreArchivo & " - " & ex.Message)
+                Return False
+            End Try
+        Next
+
+        Return False
+    End Function
+
     Private Sub AplicarResponsiveHtml(Optional navegador As WebBrowser = Nothing)
         Try
             Dim navegadorObjetivo As WebBrowser = navegador
@@ -2976,6 +3279,11 @@ Public Class Form1
 
             Dim viewportWidth As Integer = Math.Max(1, navegadorObjetivo.ClientSize.Width)
             Dim viewportHeight As Integer = Math.Max(1, navegadorObjetivo.ClientSize.Height)
+            If viewportWidth < 100 OrElse viewportHeight < 100 Then
+                Trace("Responsive omitido: viewport no listo " & viewportWidth.ToString() & "x" & viewportHeight.ToString())
+                Exit Sub
+            End If
+
             Dim scaleX As String = (viewportWidth / 1024.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
             Dim scaleY As String = (viewportHeight / 768.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
             Dim viewportWidthText As String = viewportWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)
@@ -2989,6 +3297,19 @@ Public Class Form1
             Dim modoResponsive As String = ReadIni("PARAM", "RESPONSIVE_RENDER_MODE", ConfigManager.ScreensFile).Trim().ToUpper()
 
             If modoResponsive <> "LEGACY" AndAlso viewportWidth = 1024 AndAlso viewportHeight = 768 Then
+                Dim scriptNativo As String =
+                    "(function(){" &
+                    "var d=document,b=d.body,e=d.documentElement;if(!b||!e){return;}" &
+                    "e.style.margin='0px';e.style.padding='0px';e.style.width='1024px';e.style.height='768px';e.style.overflow='hidden';" &
+                    "b.style.margin='0px';b.style.padding='0px';b.style.width='1024px';b.style.height='768px';b.style.minHeight='768px';b.style.overflow='hidden';" &
+                    "b.style.backgroundSize='100% 100%';b.style.backgroundRepeat='no-repeat';b.style.backgroundPosition='left top';" &
+                    "var r=d.getElementById('appScreensResponsiveRoot');" &
+                    "if(r){r.style.position='absolute';r.style.left='0px';r.style.top='0px';r.style.width='1024px';r.style.height='768px';r.style.overflow='hidden';r.style.zoom='1';r.style.transform='none';r.style.msTransform='none';}" &
+                    "var v=d.getElementById('appScreensResponsiveViewport');" &
+                    "if(v){v.style.position='absolute';v.style.left='0px';v.style.top='0px';v.style.width='1024px';v.style.height='768px';v.style.overflow='hidden';}" &
+                    "if(window.scrollTo){window.scrollTo(0,0);}" &
+                    "})();"
+                navegadorObjetivo.Document.InvokeScript("eval", New Object() {scriptNativo})
                 Trace("Responsive aplicado: modo=NATIVO viewport=1024x768 escala=1")
                 Exit Sub
             End If
@@ -3043,6 +3364,7 @@ Public Class Form1
 
                     If WebBrowser1.Document IsNot Nothing Then
                         AplicarResponsiveHtml()
+                        AplicarFondoTransicionalPorIdioma()
 
                         AplicarEstadoDispositivosEnHtml("carga_documento", True)
 
@@ -3271,6 +3593,7 @@ Public Class Form1
     Public Sub GuardarIdiomaSeleccionado(ByVal idioma As String)
         Try
             writeINI("LG", "RESULT", idioma, ConfigManager.WorkFile)
+            writeINI("LG", "SELECTED", "1", ConfigManager.WorkFile)
             Trace("Idioma cambiado por el usuario a: " & idioma)
 
             ' Reemplazar TODAS las imagenes en bloque al momento de elegir el idioma
@@ -3282,17 +3605,29 @@ Public Class Form1
             Dim rutaOrigen As String = Path.Combine(rutaBase, langFolder)
 
             If Directory.Exists(rutaOrigen) Then
+                LiberarRecursosMediaParaCambioIdioma()
+
                 Dim archivosOrigen As String() = Directory.GetFiles(rutaOrigen, "Pic*.*")
+                Dim reemplazados As Integer = 0
+                Dim fallidos As Integer = 0
+
                 For Each archivo In archivosOrigen
                     Dim nombreArchivo As String = Path.GetFileName(archivo)
                     Dim archivoDestino As String = Path.Combine(rutaBase, nombreArchivo)
-                    Try
-                        File.Copy(archivo, archivoDestino, True)
-                    Catch ex As Exception
-                        Trace("Error reemplazando masivamente: " & nombreArchivo & " - " & ex.Message)
-                    End Try
+                    If CopiarArchivoIdiomaConReintentos(archivo, archivoDestino) Then
+                        reemplazados += 1
+                    Else
+                        fallidos += 1
+                    End If
                 Next
-                Trace("Reemplazo masivo de recursos a idioma " & langFolder & " completado.")
+
+                PrepararWaitRegreso()
+
+                If fallidos = 0 Then
+                    Trace("Reemplazo masivo de recursos a idioma " & langFolder & " completado. Archivos=" & reemplazados.ToString())
+                Else
+                    Trace("Reemplazo masivo de recursos a idioma " & langFolder & " incompleto. OK=" & reemplazados.ToString() & " fallidos=" & fallidos.ToString())
+                End If
             End If
 
         Catch ex As Exception
