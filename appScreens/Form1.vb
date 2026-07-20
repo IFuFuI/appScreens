@@ -1650,7 +1650,6 @@ Public Class Form1
             Dim usarPantallaHostReferencia As Boolean =
                 urlPantallaHostReferencia <> "" AndAlso Not EsUrlMenuHost(urlPantallaHostReferencia)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
-            Dim existePageHostCandidata As Boolean = urlHostCandidata <> ""
             Dim esError As Boolean = False
             Dim textoHost As String = NormalizarTextoHost(contenido)
             Dim codigoRechazo As String = ExtraerCodigoRechazoHost(contenido)
@@ -1684,12 +1683,6 @@ Public Class Form1
                         Trace("Host envio rechazo con pantalla " & sPage & " configurada; se permite HTML: " & sUrl)
                     ElseIf esMenuHostSegunIni Then
                         Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
-                    ElseIf existePageHostCandidata Then
-                        sPage = pageHostCandidata
-                        sUrl = urlHostCandidata
-                        bPantalla = True
-                        LoadHoleConfigFromIni(sPage)
-                        Trace("Host envio rechazo/codigo no-000 con PAGE configurada; se permite HTML fallback: " & sPage & " => " & sUrl)
                     ElseIf contenido.Contains("TIPO DE TRANSACCION") Then
                         Trace("Encontro un error regresado por Host TIPO DE TRANSACCION; se oculta appScreens y no navega HTML local.")
 
@@ -1708,7 +1701,7 @@ Public Class Form1
                         End If
                     End If
 
-                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia AndAlso Not existePageHostCandidata Then
+                    If Not esMenuHostSegunIni AndAlso Not usarPantallaHostReferencia Then
                         esError = True
                     End If
                 End If
@@ -1849,7 +1842,11 @@ Public Class Form1
                 End If
             End If
 
-            If sUrl <> "" AndAlso EsUrlMenuHost(sUrl) AndAlso contenido.Contains("CODIGO RESPUESTA 000") Then
+            Dim hostRegresoAMenuExitoso As Boolean =
+                ndc.codigoRespuesta = "000" AndAlso
+                ((sUrl <> "" AndAlso EsUrlMenuHost(sUrl)) OrElse EsUrlMenuHost(urlHostCandidata))
+
+            If hostRegresoAMenuExitoso Then
                 If isHostError OrElse isExpetionClosePageNDC OrElse pageException <> "" Then
                     Trace("Host regreso a menu exitoso; limpiando bandera de error host")
                 End If
@@ -2280,6 +2277,12 @@ Public Class Form1
             End If
         ElseIf sValue = "701" Then
             bNDCPageActive = False
+            If isHostError AndAlso (EsUrlMenuHost(currentScreen) OrElse EsUrlMenuHost(sMenuActivo) OrElse EsUrlMenuHost(sLastMenuUrl)) Then
+                isHostError = False
+                isExpetionClosePageNDC = False
+                pageException = ""
+                Trace("701/menu: limpiando error host para restaurar opciones del menu")
+            End If
             Trace("Estado 701 recibido; se conserva memoria de errores y menu activo")
         End If
 
