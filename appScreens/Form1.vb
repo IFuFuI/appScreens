@@ -340,6 +340,7 @@ Public Class Form1
             If MostrarWaitRegreso() Then
                 If timerOcultarWaitTimeout IsNot Nothing Then
                     timerOcultarWaitTimeout.Stop()
+                    timerOcultarWaitTimeout.Interval = 2500
                     timerOcultarWaitTimeout.Start()
                 End If
                 Trace("Timeout visual: wait preventivo visible")
@@ -540,6 +541,7 @@ Public Class Form1
                 If webBrowserWaitRegreso IsNot Nothing Then webBrowserWaitRegreso.Visible = False
                 waitRegresoActivo = False
                 Me.Hide()
+                timeoutVisualEsperandoBack = False
                 timeoutWaitMostradoPorToque = False
                 Trace("Timeout visual: wait preventivo retirado sin back")
             End If
@@ -1080,6 +1082,10 @@ Public Class Form1
 
             sData = ReadIni("SCREENS", "DATA", ConfigManager.WorkFile).Trim()
             sValue = ReadIni("SCREENS", "NUM", ConfigManager.WorkFile).Trim()
+
+            If timeoutVisualEsperandoBack AndAlso (sValue <> "" OrElse sData <> "") Then
+                MostrarWaitRetornoTimeout(sValue, sData)
+            End If
 
             If coberturaTarjetaWelcomeActiva AndAlso
                (sValue = "150" OrElse sData = "KEYPIN") Then
@@ -2457,7 +2463,9 @@ Public Class Form1
             End If
 
             If sValue = "hide" Then
-                If CubrirInsercionTarjetaDesdeWelcome() Then
+                If timeoutVisualEsperandoBack AndAlso waitRegresoActivo Then
+                    Trace("Timeout visual: retorno nativo cubierto con wait")
+                ElseIf CubrirInsercionTarjetaDesdeWelcome() Then
                     Trace("Hide desde welcome cubierto con readCard.html")
                 Else
                     ocultarPantalla()
@@ -2650,6 +2658,35 @@ Public Class Form1
             timeoutWaitMostradoPorToque = False
         Catch ex As Exception
             Trace("Error ocultando por timeout visual: " & ex.Message, 2)
+        End Try
+    End Sub
+
+    Private Sub MostrarWaitRetornoTimeout(valorPantalla As String, valorData As String)
+        Try
+            If Not timeoutVisualEsperandoBack Then Exit Sub
+            If waitRegresoActivo Then Exit Sub
+
+            Dim origen As String = If(valorPantalla <> "", valorPantalla, valorData)
+            Dim tieneHtml As Boolean = False
+            If valorPantalla <> "" AndAlso valorPantalla <> "back" AndAlso valorPantalla <> "hide" Then
+                tieneHtml = ReadIni(valorPantalla, "PAGE", ConfigManager.ScreensFile).Trim() <> ""
+            End If
+
+            If MostrarWaitRegreso() Then
+                If timerOcultarWaitTimeout IsNot Nothing AndAlso Not tieneHtml AndAlso valorPantalla <> "back" Then
+                    timerOcultarWaitTimeout.Stop()
+                    timerOcultarWaitTimeout.Interval = 900
+                    timerOcultarWaitTimeout.Start()
+                End If
+
+                timeoutWaitMostradoPorToque = True
+                Trace("Timeout visual: wait mostrado por retorno. origen=" & origen &
+                      " html=" & tieneHtml.ToString())
+            Else
+                Trace("Timeout visual: wait no disponible en retorno. origen=" & origen, 1)
+            End If
+        Catch ex As Exception
+            Trace("Error mostrando wait por retorno timeout: " & ex.Message, 2)
         End Try
     End Sub
 
@@ -2932,6 +2969,13 @@ Public Class Form1
                     End If
 
                     If waitRegresoActivo Then
+                        If timeoutVisualEsperandoBack Then
+                            timeoutVisualEsperandoBack = False
+                            timeoutWaitMostradoPorToque = False
+                            If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
+                            Trace("Timeout visual: wait retirado por HTML cargado")
+                        End If
+
                         OcultarWaitRegreso()
 
                         If navegacionFastCashCubierta Then
