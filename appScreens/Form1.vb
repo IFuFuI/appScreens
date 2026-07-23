@@ -79,6 +79,7 @@ Public Class Form1
     Dim timerOcultarWaitTimeout As Timer = Nothing
     Dim timerOcultarReadCardWelcome As Timer = Nothing
     Dim timerOcultarTimeoutInicial As Timer = Nothing
+    Dim timerMenuAdvertenciaHardware As Timer = Nothing
     Dim toqueRegresoNativoDetectado As Boolean = False
     Dim idCoberturaRender As Integer = 0
 
@@ -86,6 +87,8 @@ Public Class Form1
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
     Dim advertenciaHardwareActiva As Boolean = False
     Dim advertenciaDenominacionMostrada As Boolean = False
+    Dim menuAdvertenciaHardwarePendiente As Boolean = False
+    Dim menuAdvertenciaHardwareUrl As String = ""
     Dim transicionMenuNdcPendiente As Boolean = False
     Dim transicionRetiroFastCashPendiente As Boolean = False
     Dim timer701TransicionMenu As Timer = Nothing
@@ -678,6 +681,82 @@ Public Class Form1
         transicionRetiroFastCashPendiente = False
         Trace("No llego una pantalla NDC durante la espera; procesando 701 diferido")
         ProcesarPantalla("701")
+    End Sub
+
+    Private Function DebeDiferirMenuPorAdvertenciaHardware(esPaginaMenu As Boolean, esImpresionPrematura As Boolean) As Boolean
+        Try
+            If Not esPaginaMenu OrElse esImpresionPrematura Then Return False
+            If advertenciaHardwareActiva OrElse pageException <> "" Then Return False
+
+            Return IsPrinterError() OrElse AreAnyCassettesEmpty(False) OrElse IsCdmError()
+        Catch ex As Exception
+            Trace("Error evaluando prioridad de advertencia hardware: " & ex.Message, 2)
+            Return False
+        End Try
+    End Function
+
+    Private Sub CancelarMenuAdvertenciaHardwarePendiente(origen As String)
+        Try
+            If timerMenuAdvertenciaHardware IsNot Nothing Then timerMenuAdvertenciaHardware.Stop()
+
+            If menuAdvertenciaHardwarePendiente Then
+                Trace("Menu pendiente por advertencia cancelado: origen=" & origen)
+            End If
+
+            menuAdvertenciaHardwarePendiente = False
+            menuAdvertenciaHardwareUrl = ""
+        Catch ex As Exception
+            Trace("Error cancelando menu pendiente por advertencia: " & ex.Message, 2)
+        End Try
+    End Sub
+
+    Private Sub ProgramarMenuAdvertenciaHardware(sUrl As String)
+        Try
+            If timerMenuAdvertenciaHardware Is Nothing Then
+                timerMenuAdvertenciaHardware = New Timer()
+                AddHandler timerMenuAdvertenciaHardware.Tick, AddressOf TimerMenuAdvertenciaHardware_Tick
+            End If
+
+            menuAdvertenciaHardwarePendiente = True
+            menuAdvertenciaHardwareUrl = sUrl
+
+            timerMenuAdvertenciaHardware.Stop()
+            timerMenuAdvertenciaHardware.Interval = 700
+            timerMenuAdvertenciaHardware.Start()
+
+            MostrarWaitRegreso()
+            Trace("Menu diferido por prioridad de advertencia hardware: " & sUrl)
+        Catch ex As Exception
+            Trace("Error programando menu pendiente por advertencia: " & ex.Message, 2)
+            menuAdvertenciaHardwarePendiente = False
+            menuAdvertenciaHardwareUrl = ""
+            WebBrowser1.Navigate(sUrl)
+        End Try
+    End Sub
+
+    Private Sub TimerMenuAdvertenciaHardware_Tick(sender As Object, e As EventArgs)
+        Try
+            If timerMenuAdvertenciaHardware IsNot Nothing Then timerMenuAdvertenciaHardware.Stop()
+            If Not menuAdvertenciaHardwarePendiente Then Exit Sub
+
+            Dim sUrl As String = menuAdvertenciaHardwareUrl
+            menuAdvertenciaHardwarePendiente = False
+            menuAdvertenciaHardwareUrl = ""
+
+            If advertenciaHardwareActiva OrElse pageException <> "" OrElse
+               (WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing AndAlso
+                WebBrowser1.Url.LocalPath.ToLowerInvariant().Contains("exp-85")) Then
+                Trace("Menu diferido descartado; advertencia hardware activa")
+                Exit Sub
+            End If
+
+            If sUrl = "" Then Exit Sub
+
+            Trace("Menu diferido liberado sin advertencia hardware: " & sUrl)
+            WebBrowser1.Navigate(sUrl)
+        Catch ex As Exception
+            Trace("Error liberando menu pendiente por advertencia: " & ex.Message, 2)
+        End Try
     End Sub
 
     Private Function EsUrlFastCash(url As String) As Boolean
@@ -2077,7 +2156,11 @@ Public Class Form1
                     navegacionFastCashCubierta = False
                 End If
 
-                WebBrowser1.Navigate(sUrl)
+                If DebeDiferirMenuPorAdvertenciaHardware(esPaginaMenu, esImpresionPrematura) Then
+                    ProgramarMenuAdvertenciaHardware(sUrl)
+                Else
+                    WebBrowser1.Navigate(sUrl)
+                End If
             End If
 
 
@@ -2166,6 +2249,15 @@ Public Class Form1
         Dim esEstadoAdvertenciaHardware As Boolean =
             sValue = "850" OrElse sValue = "851" OrElse sValue = "852"
 
+        If menuAdvertenciaHardwarePendiente AndAlso Not esEstadoAdvertenciaHardware Then
+            If sValue = "701" Then
+                Trace("701 ignorado durante prioridad de advertencia hardware")
+                Exit Sub
+            End If
+
+            CancelarMenuAdvertenciaHardwarePendiente(sValue)
+        End If
+
         If esEstadoAdvertenciaHardware AndAlso pageException <> "" AndAlso
            WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing AndAlso
            WebBrowser1.Url.LocalPath.ToLower().Contains("exp-85") Then
@@ -2207,6 +2299,8 @@ Public Class Form1
         End If
 
         If esEstadoAdvertenciaHardware Then
+            CancelarMenuAdvertenciaHardwarePendiente(sValue)
+
             If advertenciaHardwareActiva Then
                 Trace("Estado " & sValue & " duplicado: la advertencia actual sigue activa")
                 Exit Sub
@@ -2287,6 +2381,7 @@ Public Class Form1
         End If
 
         If sValue = "welcome" Then
+            CancelarMenuAdvertenciaHardwarePendiente("welcome")
             sValue = "500"
             bNDCPageActive = False
 
@@ -2309,6 +2404,7 @@ Public Class Form1
             baseScreenIsOnException = False
 
             If sValue = "500" Then
+                CancelarMenuAdvertenciaHardwarePendiente("500")
                 advertenciaHardwareActiva = False
                 advertenciaDenominacionMostrada = False
                 sMenuActivo = ""
@@ -2537,6 +2633,7 @@ Public Class Form1
         coberturaTarjetaWelcomeActiva = False
         If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
         CancelarOcultamientoTimeoutInicial()
+        CancelarMenuAdvertenciaHardwarePendiente("ocultar")
         timeoutSobrePantallaBase = False
         timeoutVisualEsperandoBack = False
         timeoutWaitMostradoPorToque = False
