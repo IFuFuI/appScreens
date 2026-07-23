@@ -78,6 +78,7 @@ Public Class Form1
     Dim timerOcultarWaitRegreso As Timer = Nothing
     Dim timerOcultarWaitTimeout As Timer = Nothing
     Dim timerOcultarReadCardWelcome As Timer = Nothing
+    Dim timerOcultarTimeoutInicial As Timer = Nothing
     Dim toqueRegresoNativoDetectado As Boolean = False
     Dim idCoberturaRender As Integer = 0
 
@@ -108,6 +109,8 @@ Public Class Form1
     Dim backVisualPendiente As Boolean = False
     Dim backVisualUrlPendiente As String = ""
     Dim timeoutVisualEsperandoBack As Boolean = False
+    Dim timeoutSobrePantallaBase As Boolean = False
+    Dim timeoutOcultamientoPendiente As Boolean = False
     Dim timeoutWaitMostradoPorToque As Boolean = False
     Dim coberturaTarjetaWelcomeActiva As Boolean = False
     Dim readCardWelcomeUrl As String = ""
@@ -181,6 +184,7 @@ Public Class Form1
         writeINI("NDC", "EVENT_SUPER", "", ConfigManager.strRutaInterface)
         writeINI("NDC", "SUPER", "", ConfigManager.strRutaInterface)
         writeINI("NDC", "READ", "", ConfigManager.strRutaInterface)
+        AsegurarParametroTimeoutHideDelay()
 
         Try
             ' Detectar la resolución REAL del monitor actual (Aqui yo pongo las resoluciones NCR=1024x768 o Hyosung=1280x800)
@@ -311,7 +315,8 @@ Public Class Form1
             End If
 
             If nCode >= 0 AndAlso wParam.ToInt32() = WM_LBUTTONUP AndAlso
-               timeoutVisualEsperandoBack AndAlso Not timeoutWaitMostradoPorToque Then
+               timeoutVisualEsperandoBack AndAlso Not timeoutOcultamientoPendiente AndAlso
+               Not timeoutWaitMostradoPorToque Then
 
                 timeoutWaitMostradoPorToque = True
                 Trace("Toque durante timeout visual; mostrando wait preventivo")
@@ -407,6 +412,10 @@ Public Class Form1
             timerOcultarReadCardWelcome = New Timer()
             timerOcultarReadCardWelcome.Interval = 3000
             AddHandler timerOcultarReadCardWelcome.Tick, AddressOf TimerOcultarReadCardWelcome_Tick
+
+            timerOcultarTimeoutInicial = New Timer()
+            timerOcultarTimeoutInicial.Interval = 1000
+            AddHandler timerOcultarTimeoutInicial.Tick, AddressOf TimerOcultarTimeoutInicial_Tick
 
             webBrowserWaitRegreso.Navigate(sWaitUrl)
             Trace("Precargando wait de regreso: " & sWaitUrl)
@@ -538,15 +547,37 @@ Public Class Form1
             If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
 
             If timeoutVisualEsperandoBack Then
+                Dim retornoPantallaBase As Boolean = timeoutSobrePantallaBase
+
                 If webBrowserWaitRegreso IsNot Nothing Then webBrowserWaitRegreso.Visible = False
                 waitRegresoActivo = False
                 Me.Hide()
                 timeoutVisualEsperandoBack = False
+                timeoutSobrePantallaBase = False
+                timeoutOcultamientoPendiente = False
                 timeoutWaitMostradoPorToque = False
-                Trace("Timeout visual: wait preventivo retirado sin back")
+
+                If retornoPantallaBase Then
+                    Trace("Timeout visual: wait retirado; pantalla base activa")
+                Else
+                    Trace("Timeout visual: wait preventivo retirado sin back")
+                End If
             End If
         Catch ex As Exception
             Trace("Error retirando wait preventivo timeout: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub TimerOcultarTimeoutInicial_Tick(sender As Object, e As EventArgs)
+        Try
+            If timerOcultarTimeoutInicial IsNot Nothing Then timerOcultarTimeoutInicial.Stop()
+
+            If timeoutOcultamientoPendiente AndAlso timeoutVisualEsperandoBack Then
+                timeoutOcultamientoPendiente = False
+                OcultarAppScreensPorTimeout()
+            End If
+        Catch ex As Exception
+            Trace("Error ocultando timeout visual diferido: " & ex.Message, 2)
         End Try
     End Sub
 
@@ -1083,7 +1114,8 @@ Public Class Form1
             sData = ReadIni("SCREENS", "DATA", ConfigManager.WorkFile).Trim()
             sValue = ReadIni("SCREENS", "NUM", ConfigManager.WorkFile).Trim()
 
-            If timeoutVisualEsperandoBack AndAlso (sValue <> "" OrElse sData <> "") Then
+            If timeoutVisualEsperandoBack AndAlso Not timeoutOcultamientoPendiente AndAlso
+               (sValue <> "" OrElse sData <> "") Then
                 MostrarWaitRetornoTimeout(sValue, sData)
             End If
 
@@ -1862,6 +1894,16 @@ Public Class Form1
                 pageException = ""
             End If
 
+            If Not hostErrorEnLote AndAlso sUrl <> "" AndAlso EsUrlMenuHost(sUrl) Then
+                If isHostError OrElse isExpetionClosePageNDC OrElse pageException <> "" Then
+                    Trace("Menu recibido desde host; limpiando bandera de error host")
+                End If
+
+                isHostError = False
+                isExpetionClosePageNDC = False
+                pageException = ""
+            End If
+
             If sUrl <> "" Then
                 AplicarDatosNdc(ndc)
             End If
@@ -2283,12 +2325,20 @@ Public Class Form1
             End If
         ElseIf sValue = "701" Then
             bNDCPageActive = False
+            Dim errorHostMenuLimpiado As Boolean = False
+
             If isHostError AndAlso (EsUrlMenuHost(currentScreen) OrElse EsUrlMenuHost(sMenuActivo) OrElse EsUrlMenuHost(sLastMenuUrl)) Then
                 isHostError = False
                 isExpetionClosePageNDC = False
                 pageException = ""
+                errorHostMenuLimpiado = True
                 Trace("701/menu: limpiando error host para restaurar opciones del menu")
             End If
+
+            If errorHostMenuLimpiado Then
+                AplicarEstadoDispositivosEnHtml("701_menu", True)
+            End If
+
             Trace("Estado 701 recibido; se conserva memoria de errores y menu activo")
         End If
 
@@ -2486,6 +2536,8 @@ Public Class Form1
         Trace("Ocultando appScreens")
         coberturaTarjetaWelcomeActiva = False
         If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
+        CancelarOcultamientoTimeoutInicial()
+        timeoutSobrePantallaBase = False
         timeoutVisualEsperandoBack = False
         timeoutWaitMostradoPorToque = False
         If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
@@ -2612,6 +2664,7 @@ Public Class Form1
         Try
             If serviceOutController IsNot Nothing AndAlso serviceOutController.IsActive Then Exit Sub
 
+            CancelarOcultamientoTimeoutInicial()
             tmOut.Enabled = False
             writeINI("APP", "TIMEOUT", "", ConfigManager.WorkFile)
             tmOut.Enabled = True
@@ -2623,6 +2676,7 @@ Public Class Form1
 
     Private Sub DetenerTimeoutAppScreens(Optional limpiarBandera As Boolean = False)
         Try
+            CancelarOcultamientoTimeoutInicial()
             tmOut.Enabled = False
 
             If limpiarBandera Then
@@ -2633,16 +2687,51 @@ Public Class Form1
         End Try
     End Sub
 
-    Private Sub OcultarPorTimeoutAppScreens()
+    Private Sub CancelarOcultamientoTimeoutInicial()
         Try
-            DetenerTimeoutAppScreens(False)
+            If timerOcultarTimeoutInicial IsNot Nothing Then timerOcultarTimeoutInicial.Stop()
+            timeoutOcultamientoPendiente = False
+        Catch ex As Exception
+        End Try
+    End Sub
 
-            If serviceOutController IsNot Nothing AndAlso serviceOutController.IsActive Then Exit Sub
+    Private Function ObtenerDelayOcultarTimeoutMs() As Integer
+        Try
+            Dim valor As String = ReadIni("PARAM", "TIMEOUT_HIDE_DELAY_MS", ConfigManager.ScreensFile).Trim()
+            Dim delayMs As Integer = 1000
+            Dim delayConfigurado As Integer = 0
 
-            If currentScreen <> "" Then
-                pantallaAntesTimeout = currentScreen
+            If valor <> "" AndAlso Integer.TryParse(valor, delayConfigurado) Then
+                delayMs = delayConfigurado
+                If delayMs < 0 Then delayMs = 0
+                If delayMs > 5000 Then delayMs = 5000
             End If
 
+            Return delayMs
+        Catch ex As Exception
+            Return 1000
+        End Try
+    End Function
+
+    Private Sub AsegurarParametroTimeoutHideDelay()
+        Try
+            Dim valor As String = ReadIni("PARAM", "TIMEOUT_HIDE_DELAY_MS", ConfigManager.ScreensFile).Trim()
+            If valor <> "" AndAlso valor <> "1500" Then Exit Sub
+
+            Dim directorio As String = Path.GetDirectoryName(ConfigManager.ScreensFile)
+            If directorio <> "" AndAlso Not Directory.Exists(directorio) Then
+                Directory.CreateDirectory(directorio)
+            End If
+
+            writeINI("PARAM", "TIMEOUT_HIDE_DELAY_MS", "1000", ConfigManager.ScreensFile)
+            Trace("Parametro TIMEOUT_HIDE_DELAY_MS inicializado en appScreens.ini")
+        Catch ex As Exception
+            Trace("No se pudo inicializar TIMEOUT_HIDE_DELAY_MS: " & ex.Message, 1)
+        End Try
+    End Sub
+
+    Private Sub OcultarAppScreensPorTimeout()
+        Try
             Trace("Timeout visual: appScreens oculto")
             tmMsgDevices.Enabled = False
             Me.Hide()
@@ -2650,12 +2739,88 @@ Public Class Form1
             If regresoNativo024Activo Then
                 DejarWaitComoPrimeraCapaOculta()
             End If
+        Catch ex As Exception
+            Trace("Error ocultando appScreens por timeout: " & ex.Message, 2)
+        End Try
+    End Sub
+
+    Private Function TimeoutOcurrioSobrePantallaBase() As Boolean
+        Try
+            If Not Me.Visible Then Return True
+
+            Dim pantalla As String = currentScreen.Trim().ToLowerInvariant()
+
+            Return pantalla = "" OrElse pantalla.StartsWith("pantalla_nativa_")
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Sub FinalizarTimeoutSobrePantallaBase(origen As String)
+        Try
+            DetenerTimeoutAppScreens(True)
+            timeoutWaitMostradoPorToque = False
+            pantallaAntesTimeout = ""
+            backVisualPendiente = False
+            backVisualUrlPendiente = ""
+
+            If waitRegresoActivo AndAlso timerOcultarWaitTimeout IsNot Nothing Then
+                timerOcultarWaitTimeout.Stop()
+                timerOcultarWaitTimeout.Interval = 900
+                timerOcultarWaitTimeout.Start()
+                Trace("Timeout visual: retorno a pantalla base cubierto con wait. origen=" & origen)
+                Return
+            End If
+
+            timeoutSobrePantallaBase = False
+            timeoutVisualEsperandoBack = False
+            Me.Hide()
+            Trace("Timeout visual: retorno a pantalla base; appScreens permanece oculto. origen=" & origen)
+        Catch ex As Exception
+            Trace("Error finalizando timeout sobre pantalla base: " & ex.Message, 2)
+            timeoutVisualEsperandoBack = False
+            timeoutSobrePantallaBase = False
+            Me.Hide()
+        End Try
+    End Sub
+
+    Private Sub OcultarPorTimeoutAppScreens()
+        Try
+            DetenerTimeoutAppScreens(False)
+
+            If serviceOutController IsNot Nothing AndAlso serviceOutController.IsActive Then Exit Sub
+
+            timeoutSobrePantallaBase = TimeoutOcurrioSobrePantallaBase()
+
+            If timeoutSobrePantallaBase Then
+                pantallaAntesTimeout = ""
+                currentScreen = "pantalla_nativa_texto"
+                bNDCPageActive = True
+            ElseIf currentScreen <> "" Then
+                pantallaAntesTimeout = currentScreen
+            End If
 
             sCurrent = ""
             sCurrentData = ""
             writeINI("APP", "TIMEOUT", "ON", ConfigManager.WorkFile)
             timeoutVisualEsperandoBack = True
             timeoutWaitMostradoPorToque = False
+
+            Dim delayOcultamiento As Integer = ObtenerDelayOcultarTimeoutMs()
+
+            If timeoutSobrePantallaBase OrElse delayOcultamiento <= 0 OrElse Not Me.Visible Then
+                timeoutOcultamientoPendiente = False
+                OcultarAppScreensPorTimeout()
+            ElseIf timerOcultarTimeoutInicial IsNot Nothing Then
+                timeoutOcultamientoPendiente = True
+                timerOcultarTimeoutInicial.Stop()
+                timerOcultarTimeoutInicial.Interval = delayOcultamiento
+                timerOcultarTimeoutInicial.Start()
+                Trace("Timeout visual: ocultamiento diferido " & delayOcultamiento.ToString() & "ms")
+            Else
+                timeoutOcultamientoPendiente = False
+                OcultarAppScreensPorTimeout()
+            End If
         Catch ex As Exception
             Trace("Error ocultando por timeout visual: " & ex.Message, 2)
         End Try
@@ -2692,16 +2857,26 @@ Public Class Form1
 
     Private Sub MostrarPantallaBackVisual()
         Try
+            CancelarOcultamientoTimeoutInicial()
+
+            If timeoutSobrePantallaBase Then
+                FinalizarTimeoutSobrePantallaBase("back")
+                Return
+            End If
+
             Dim pantallaBack As String = pantallaAntesTimeout
             If pantallaBack = "" Then pantallaBack = currentScreen
 
             If pantallaBack = "" Then
                 Trace("Back visual sin HTML previo; appScreens permanece oculto", 1)
+                timeoutSobrePantallaBase = False
+                timeoutVisualEsperandoBack = False
                 Me.Hide()
                 Return
             End If
 
             currentScreen = pantallaBack
+            timeoutSobrePantallaBase = False
             timeoutVisualEsperandoBack = False
             timeoutWaitMostradoPorToque = False
             If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
