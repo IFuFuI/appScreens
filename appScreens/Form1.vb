@@ -1514,6 +1514,13 @@ Public Class Form1
             End If
 
             If urlRetornoExcepcion <> "" Then
+                Dim coberturaExpVisible As Boolean = MostrarWaitRegreso()
+                If coberturaExpVisible Then
+                    Trace("EXP: wait visible para regreso a menu")
+                Else
+                    Trace("EXP: wait no disponible para regreso a menu", 1)
+                End If
+
                 currentScreen = urlRetornoExcepcion
                 WebBrowser1.Navigate(urlRetornoExcepcion)
                 Me.Show()
