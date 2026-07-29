@@ -1853,6 +1853,16 @@ Public Class Form1
                 Trace("ESCUDO INTELIGENTE: Protección activada por Retiro sin Tarjeta (055 + PEM:034)")
             End If
 
+            ' Prestamo digital: el switch puede reportar el mismo rechazo (TIPO DE TRANSACCION +
+            ' respuesta no exitosa) con distinto layout segun el puerto/switch que conteste.
+            ' Tanto P2655 como P6550 tienen pantalla propia para este caso (INI ya mapea a su
+            ' HTML correcto), pero el host manda el 513 de cierre casi de inmediato, asi que hay
+            ' que proteger esa pantalla para que no la borre.
+            Dim esRechazoPrestamoDigitalConPantallaPropia As Boolean =
+                (ndc.Layout = "P2655" OrElse ndc.Layout = "P6550") AndAlso
+                contenido.Contains("TIPO DE TRANSACCION") AndAlso
+                tieneRespuestaNoExitosa
+
             If esLayoutProtegido AndAlso esError Then
                 Trace("ESCUDO INTELIGENTE: Ignorando error del Host en layout protegido: " & ndc.Layout)
                 esError = False
@@ -1943,6 +1953,13 @@ Public Class Form1
                 sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
                 LoadHoleConfigFromIni(sPage)
                 Trace("sURL Msg: " & sUrl)
+
+                If esRechazoPrestamoDigitalConPantallaPropia AndAlso sUrl <> "" Then
+                    protegerHostReferenciaEnLote = True
+                    pantallaHostReferenciaEnLote = sPage
+                    urlHostReferenciaEnLote = sUrl
+                    Trace("Prestamo digital con pantalla propia (" & sUrl & "); se protege contra 513 inmediato")
+                End If
             ElseIf Not esRechazoRetiroSinEfectivo AndAlso Not omitirFaltaDenominacionPostDispensacion AndAlso Not esError AndAlso ndc.CodigoTransaccion <> "" AndAlso sUrl = "" Then
                 Dim fallbackUrl As String = ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
 
