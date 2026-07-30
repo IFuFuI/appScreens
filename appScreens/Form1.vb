@@ -2268,6 +2268,13 @@ Public Class Form1
             toqueRegresoNativoDetectado = False
             Timer1.Interval = 300
             OcultarWaitRegreso()
+
+            If timeoutVisualEsperandoBack Then
+                timeoutVisualEsperandoBack = False
+                timeoutWaitMostradoPorToque = False
+                If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
+                Trace("Timeout visual: wait retirado por regreso directo a " & sValue)
+            End If
         End If
 
         Dim esEstadoAdvertenciaHardware As Boolean =
@@ -2645,6 +2652,9 @@ Public Class Form1
                     MostrarPantallaBackVisual()
                 Else
                     Me.Show()
+                    Me.TopMost = True
+                    Me.Activate()
+                    WebBrowser1.BringToFront()
                 End If
             End If
         Catch ex As Exception
@@ -2955,7 +2965,8 @@ Public Class Form1
             Dim origen As String = If(valorPantalla <> "", valorPantalla, valorData)
             Dim tieneHtml As Boolean = False
             If valorPantalla <> "" AndAlso valorPantalla <> "back" AndAlso valorPantalla <> "hide" Then
-                tieneHtml = ReadIni(valorPantalla, "PAGE", ConfigManager.ScreensFile).Trim() <> ""
+                Dim seccionIni As String = If(valorPantalla = "welcome", "500", valorPantalla)
+                tieneHtml = ReadIni(seccionIni, "PAGE", ConfigManager.ScreensFile).Trim() <> ""
             End If
 
             If MostrarWaitRegreso() Then
