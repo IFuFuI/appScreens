@@ -2193,6 +2193,10 @@ Public Class Form1
             ' Limpiamos menu previo para evitar que un 701/513 posterior regrese al menu anterior.
             sLastMenuUrl = ""
 
+            ' La respuesta del host ya llego (aunque sea pantalla nativa sin HTML propio).
+            ' Cancelamos el 701 diferido para no forzar un regreso al menu.
+            CompletarTransicionMenuNdc()
+
             sImagen = ReadIni(sPage, "PIC", ConfigManager.ScreensFile)
             If sImagen <> "" Then
                 Try
