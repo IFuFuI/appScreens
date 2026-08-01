@@ -87,6 +87,8 @@ Public Class Form1
     Dim tiempoBloqueo701 As DateTime = DateTime.MinValue
     Dim advertenciaHardwareActiva As Boolean = False
     Dim advertenciaDenominacionMostrada As Boolean = False
+    Dim bAdvertenciaFicticiaMostrada As Boolean = False
+    Dim menuPendienteTrasAdvertenciaFicticia As String = ""
     Dim menuAdvertenciaHardwarePendiente As Boolean = False
     Dim menuAdvertenciaHardwareUrl As String = ""
     Dim transicionMenuNdcPendiente As Boolean = False
@@ -1570,6 +1572,26 @@ Public Class Form1
         ProcesarPantalla("300")
     End Sub
 
+    ''' <summary>
+    ''' Boton "Si" de exp-852-fic.html: es un click LOCAL, no se manda nada al host/switch.
+    ''' Solo destapa el menu real que ya estaba listo antes de mostrar la advertencia ficticia.
+    ''' </summary>
+    Public Sub clickPageFicticia()
+        Try
+            Dim sUrlPendiente As String = menuPendienteTrasAdvertenciaFicticia
+            menuPendienteTrasAdvertenciaFicticia = ""
+
+            Trace("exp-852-fic: click ficticio 'Si'; se muestra el menu pendiente=" & sUrlPendiente & " sin notificar al host")
+
+            If sUrlPendiente <> "" Then
+                currentScreen = sUrlPendiente
+                WebBrowser1.Navigate(sUrlPendiente)
+            End If
+        Catch ex As Exception
+            Trace("Error en clickPageFicticia: " & ex.Message)
+        End Try
+    End Sub
+
     Public Function getVar(sVar As String) As String
         Dim sretur As String = String.Empty
 
@@ -2180,7 +2202,17 @@ Public Class Form1
                     navegacionFastCashCubierta = False
                 End If
 
-                If DebeDiferirMenuPorAdvertenciaHardware(esPaginaMenu, esImpresionPrematura) Then
+                If esPaginaMenu AndAlso Not bAdvertenciaFicticiaMostrada AndAlso
+                   (AreAnyCassettesEmpty() OrElse IsCdmError()) AndAlso
+                   ReadIni("852FIC", "PAGE", ConfigManager.ScreensFile).Trim() <> "" Then
+
+                    Dim sUrlFic As String = ReadIni("852FIC", "PAGE", ConfigManager.ScreensFile).Trim()
+                    bAdvertenciaFicticiaMostrada = True
+                    menuPendienteTrasAdvertenciaFicticia = sUrl
+                    Trace("Advertencia hardware local (ficticia): interceptando menu con exp-852-fic, menu real pendiente=" & sUrl)
+                    currentScreen = sUrlFic
+                    WebBrowser1.Navigate(sUrlFic)
+                ElseIf DebeDiferirMenuPorAdvertenciaHardware(esPaginaMenu, esImpresionPrematura) Then
                     ProgramarMenuAdvertenciaHardware(sUrl)
                 Else
                     WebBrowser1.Navigate(sUrl)
@@ -2356,6 +2388,9 @@ Public Class Form1
             MostrarWaitRegreso()
 
             advertenciaHardwareActiva = True
+            ' El switch ya mando su propia advertencia real (850/851/852);
+            ' no hace falta que ademas se muestre la version ficticia local.
+            bAdvertenciaFicticiaMostrada = True
 
             If sValue = "850" Then
                 sExp850OriginalUrl = currentScreen
@@ -2442,6 +2477,8 @@ Public Class Form1
                 CancelarMenuAdvertenciaHardwarePendiente("500")
                 advertenciaHardwareActiva = False
                 advertenciaDenominacionMostrada = False
+                bAdvertenciaFicticiaMostrada = False
+                menuPendienteTrasAdvertenciaFicticia = ""
                 sMenuActivo = ""
                 sLastMenuUrl = ""
                 Trace("Nueva sesion detectada")
