@@ -59,6 +59,23 @@ Module Module1
         End Try
     End Sub
 
+    Public Sub LogScreensNum(ByVal valor As String)
+        Try
+            If String.IsNullOrWhiteSpace(valor) Then Exit Sub
+
+            Dim logDir As String = ConfigManager.LogPath
+            If String.IsNullOrWhiteSpace(logDir) Then logDir = "C:\appMain\log\"
+            If Not Directory.Exists(logDir) Then Directory.CreateDirectory(logDir)
+
+            Dim linea As String = Format(Now(), "dd-MM-yyyy HH:mm:ss.fff tt") &
+                "      [PID:" & Process.GetCurrentProcess().Id & "] SCREENS.NUM=" & valor.Trim() & vbCrLf
+
+            File.AppendAllText(Path.Combine(logDir, Format(Now(), "yyyyMMdd") & "_appscreens_num.log"), linea)
+        Catch ex As Exception
+            Trace("[LogScreensNum] [Error] " + ex.Message, 1)
+        End Try
+    End Sub
+
     Public Function ObtenerArchivosMSGOrdenados(rutaCarpeta As String) As List(Of String)
         Dim archivosOrdenados As New List(Of String)
 

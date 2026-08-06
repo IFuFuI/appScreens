@@ -49,6 +49,19 @@ Public Class ConfigManager
         End Get
     End Property
 
+    Public Shared ReadOnly Property SecureTraceArchiveEnabled As Boolean
+        Get
+            Dim value As String = GetConfigValue("SecureTraceArchiveEnabled", "TRUE").Trim().ToUpperInvariant()
+            Return value <> "FALSE" AndAlso value <> "0" AndAlso value <> "NO"
+        End Get
+    End Property
+
+    Public Shared ReadOnly Property SecureTracePublicKeyFile As String
+        Get
+            Return GetConfigValue("SecureTracePublicKeyFile", "C:\appMain\config\secure_trace_public.xml")
+        End Get
+    End Property
+
     Public Shared ReadOnly Property strRutaInterface As String
         Get
             Return GetConfigValue("strRutaInterface", "C:\appMain\work\mvInterface.ini")

@@ -108,6 +108,7 @@ Public Class Form1
     Dim proteccionMontosRSTHasta As DateTime = DateTime.MinValue
     Dim proteccionMontosRSTPendienteHasta As DateTime = DateTime.MinValue
     Dim retiroSinTarjetaWelcomeHasta As DateTime = DateTime.MinValue
+    Dim proteccionWelcomeHostHasta As DateTime = DateTime.MinValue
     Dim serviceOutController As ServiceOutController = Nothing
     Dim ultimoLogOperativo As DateTime = DateTime.MinValue
     Dim pantallaAntesTimeout As String = ""
@@ -805,9 +806,12 @@ Public Class Form1
     End Function
 
     Private Function EsNdcMontosRST(contenido As String, url As String) As Boolean
+        Return EsUrlMontosRST(url) AndAlso EsContenidoMontosRST(contenido)
+    End Function
+
+    Private Function EsContenidoMontosRST(contenido As String) As Boolean
         Dim texto As String = NormalizarTextoHost(contenido)
-        Return EsUrlMontosRST(url) AndAlso
-               texto.Contains("VALIDACION DE DENOMINACION") AndAlso
+        Return texto.Contains("VALIDACION DE DENOMINACION") AndAlso
                texto.Contains("PARA RETIROS SIN TARJETA") AndAlso
                texto.Contains("ESTATUS OK")
     End Function
@@ -819,6 +823,19 @@ Public Class Form1
         Trace("Proteccion Montos_RST activa por 4 segundos")
     End Sub
 
+    Private Sub RetirarCoberturaMontosRST(motivo As String)
+        Try
+            If waitRegresoActivo Then
+                OcultarWaitRegreso()
+                Trace("Cobertura Montos_RST retirada por " & motivo)
+            End If
+
+            Me.Hide()
+        Catch ex As Exception
+            Trace("Error retirando cobertura Montos_RST: " & ex.Message)
+        End Try
+    End Sub
+
     Private Function ProteccionMontosRSTActiva() As Boolean
         Return DateTime.Now <= proteccionMontosRSTHasta
     End Function
@@ -828,6 +845,7 @@ Public Class Form1
     End Function
 
     Private Sub MarcarRetiroSinTarjetaDesdeWelcome()
+        LimpiarProteccionWelcomeHost()
         retiroSinTarjetaWelcomeHasta = DateTime.Now.AddSeconds(8)
         proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(3500)
         Trace("Retiro sin tarjeta desde welcome detectado; se cubre transicion hacia Montos_RST")
@@ -840,6 +858,33 @@ Public Class Form1
 
     Private Function RetiroSinTarjetaDesdeWelcomePendiente() As Boolean
         Return DateTime.Now <= retiroSinTarjetaWelcomeHasta
+    End Function
+
+    Private Sub ActivarProteccionWelcomeHost()
+        proteccionWelcomeHostHasta = DateTime.Now.AddSeconds(8)
+        Trace("Proteccion welcome contra MSG NDC residual activa")
+    End Sub
+
+    Private Sub LimpiarProteccionWelcomeHost()
+        proteccionWelcomeHostHasta = DateTime.MinValue
+    End Sub
+
+    Private Function ProteccionWelcomeHostActiva() As Boolean
+        Try
+            If proteccionWelcomeHostHasta = DateTime.MinValue Then Return False
+            If EsUrlWelcome(currentScreen) Then Return True
+            If sCurrent = "500" Then Return True
+
+            If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Url IsNot Nothing Then
+                If EsUrlWelcome(WebBrowser1.Url.LocalPath) Then Return True
+            End If
+
+            Return DateTime.Now <= proteccionWelcomeHostHasta
+        Catch ex As Exception
+            Trace("Error evaluando proteccion welcome host: " & ex.Message, 1)
+        End Try
+
+        Return False
     End Function
 
     Private Sub LoadHoleConfigFromIni(screenId As String)
@@ -1055,6 +1100,7 @@ Public Class Form1
     Private Sub EliminarArchivoMsgSeguro(archivo As String)
         Try
             If File.Exists(archivo) Then
+                SecureTraceArchive.ArchiveFileBeforeDelete(archivo)
                 File.Delete(archivo)
             End If
         Catch ex As Exception
@@ -1194,6 +1240,7 @@ Public Class Form1
 
             sData = ReadIni("SCREENS", "DATA", ConfigManager.WorkFile).Trim()
             sValue = ReadIni("SCREENS", "NUM", ConfigManager.WorkFile).Trim()
+            LogScreensNum(sValue)
 
             If timeoutVisualEsperandoBack AndAlso Not timeoutOcultamientoPendiente AndAlso
                (sValue <> "" OrElse sData <> "") Then
@@ -1238,10 +1285,13 @@ Public Class Form1
                     End If
 
                     If (sValue = "300" OrElse sValue = "701") AndAlso
-                       ProteccionMontosRSTActiva() AndAlso EsUrlMontosRST(currentScreen) Then
+                       ProteccionMontosRSTActiva() Then
+                        RetirarCoberturaMontosRST("estado " & sValue)
                         Trace("Ignorando " & sValue & " durante proteccion Montos_RST activa")
                         allowScreen = False
                     ElseIf sValue = "701" AndAlso ProteccionMontosRSTPendiente() Then
+                        ActivarProteccionMontosRST()
+                        RetirarCoberturaMontosRST("701 inmediato")
                         Trace("Ignorando 701 inmediato por ventana pendiente Montos_RST")
                         allowScreen = False
                     ElseIf bFaltaBilletesDesdeMenu AndAlso EsUrlFaltaBilletesDinamico(currentScreen) AndAlso
@@ -1271,6 +1321,9 @@ Public Class Form1
                             Trace("701 con menu HTML activo, forzando bNDCPageActive=False y procesando")
                             bNDCPageActive = False
                         ElseIf currentScreen = "pantalla_nativa_texto" Then
+                            If ProteccionMontosRSTActiva() Then
+                                RetirarCoberturaMontosRST("701 nativo")
+                            End If
                             Trace("701 recibido despues de pantalla nativa texto. Se ignora para no montar menu encima de pantalla nativa.")
                             currentScreen = "pantalla_nativa_texto_esperando_701"
                             allowScreen = False
@@ -1816,6 +1869,24 @@ Public Class Form1
                       " hostProblema=" & hostReportaProblema.ToString())
             End If
 
+            If hostReportaProblema AndAlso
+               tieneRechazoHost AndAlso
+               contenido.Contains("TIPO DE TRANSACCION") AndAlso
+               Not esFaltaDenominacion AndAlso
+               Not usarPantallaHostReferencia AndAlso
+               Not esMenuHostSegunIni AndAlso
+               ProteccionWelcomeHostActiva() Then
+
+                Trace("MSG NDC residual ignorado por proteccion welcome; se mantiene appScreens visible. archivo=" & archivo)
+                isHostError = False
+                isExpetionClosePageNDC = False
+                pageException = ""
+                sExp852OriginalUrl = ""
+                sExp850OriginalUrl = ""
+                EliminarArchivoMsgSeguro(archivo)
+                Continue For
+            End If
+
             If hostReportaProblema Then
                 If Not esFaltaDenominacion Then
                     If usarPantallaHostReferencia Then
@@ -2108,6 +2179,7 @@ Public Class Form1
 
             If EsNdcMontosRST(contenido, sUrl) Then
                 ActivarProteccionMontosRST()
+                RetirarCoberturaMontosRST("mensaje Montos_RST")
             End If
 
             If esFastCash Then
@@ -2247,6 +2319,11 @@ Public Class Form1
 
                     bNDCPageActive = True
                     currentScreen = "pantalla_nativa_texto"
+
+                    If EsContenidoMontosRST(contenido) Then
+                        ActivarProteccionMontosRST()
+                        RetirarCoberturaMontosRST("texto nativo Montos_RST")
+                    End If
                 End If
             End If
         End If
@@ -2259,18 +2336,23 @@ Public Class Form1
         Dim sIdioma As String
 
         If sValue = "300" Then
+            If ProteccionMontosRSTActiva() Then
+                RetirarCoberturaMontosRST("300 residual")
+                Trace("300 residual ignorado durante proteccion Montos_RST activa")
+                Exit Sub
+            End If
+
             If EsMenuHtmlActual() Then
                 IniciarTransicionMenuNdc()
             End If
 
-            MostrarWaitRegreso()
-
-            If EsUrlWelcome(currentScreen) AndAlso
-               RetiroSinTarjetaDesdeWelcomePendiente() AndAlso
-               ProteccionMontosRSTPendiente() Then
+            If RetiroSinTarjetaDesdeWelcomePendiente() AndAlso ProteccionMontosRSTPendiente() Then
+                MostrarWaitRegreso()
                 Trace("300 de retiro sin tarjeta: wait como cobertura; se omite navegar WebBrowser a wait.html")
                 Exit Sub
             End If
+
+            MostrarWaitRegreso()
         ElseIf sValue = "701" AndAlso transicionMenuNdcPendiente Then
             Posponer701TransicionMenu()
             Exit Sub
@@ -2474,6 +2556,7 @@ Public Class Form1
             baseScreenIsOnException = False
 
             If sValue = "500" Then
+                ActivarProteccionWelcomeHost()
                 CancelarMenuAdvertenciaHardwarePendiente("500")
                 advertenciaHardwareActiva = False
                 advertenciaDenominacionMostrada = False
@@ -2729,6 +2812,8 @@ Public Class Form1
             If coberturaTarjetaWelcomeActiva Then Return False
             If Not Me.Visible Then Return False
             If Not EsUrlWelcome(currentScreen) Then Return False
+
+            LimpiarProteccionWelcomeHost()
 
             Dim urlReadCard As String = ReadIni("200", "PAGE", ConfigManager.ScreensFile).Trim()
             If urlReadCard = "" Then Return False
