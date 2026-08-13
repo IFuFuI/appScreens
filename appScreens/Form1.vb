@@ -108,6 +108,7 @@ Public Class Form1
     Dim proteccionMontosRSTHasta As DateTime = DateTime.MinValue
     Dim proteccionMontosRSTPendienteHasta As DateTime = DateTime.MinValue
     Dim retiroSinTarjetaWelcomeHasta As DateTime = DateTime.MinValue
+    Dim tarjetaFisicaActiva As Boolean = False
     Dim proteccionWelcomeHostHasta As DateTime = DateTime.MinValue
     Dim serviceOutController As ServiceOutController = Nothing
     Dim ultimoLogOperativo As DateTime = DateTime.MinValue
@@ -382,6 +383,39 @@ Public Class Form1
             Return False
         End Try
     End Function
+
+    Private Function EsHtmlAppScreensActual() As Boolean
+        Try
+            Dim cs As String = currentScreen.Trim().ToLower()
+
+            If cs = "" Then Return False
+            If cs.StartsWith("pantalla_nativa_") Then Return False
+
+            Return cs.EndsWith(".html") OrElse cs.EndsWith(".htm")
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Function EsUrlWaitTransicion(sUrl As String) As Boolean
+        Dim u As String = If(sUrl, "").Trim().ToLower()
+
+        Return u.EndsWith("\wait.html") OrElse
+               u.EndsWith("/wait.html")
+    End Function
+
+    Private Sub CubrirTransicionHtml(sUrlDestino As String)
+        Try
+            If String.IsNullOrWhiteSpace(sUrlDestino) Then Exit Sub
+            If EsUrlWaitTransicion(sUrlDestino) Then Exit Sub
+            If WebBrowserTienePaginaCargada(sUrlDestino) Then Exit Sub
+            If waitRegresoActivo Then Exit Sub
+
+            MostrarWaitRegreso()
+        Catch ex As Exception
+            Trace("Error cubriendo transicion HTML: " & ex.Message, 2)
+        End Try
+    End Sub
 
     Private Sub InicializarWaitRegreso()
         Try
@@ -733,6 +767,7 @@ Public Class Form1
             Trace("Error programando menu pendiente por advertencia: " & ex.Message, 2)
             menuAdvertenciaHardwarePendiente = False
             menuAdvertenciaHardwareUrl = ""
+            CubrirTransicionHtml(sUrl)
             WebBrowser1.Navigate(sUrl)
         End Try
     End Sub
@@ -756,6 +791,7 @@ Public Class Form1
             If sUrl = "" Then Exit Sub
 
             Trace("Menu diferido liberado sin advertencia hardware: " & sUrl)
+            CubrirTransicionHtml(sUrl)
             WebBrowser1.Navigate(sUrl)
         Catch ex As Exception
             Trace("Error liberando menu pendiente por advertencia: " & ex.Message, 2)
@@ -814,6 +850,18 @@ Public Class Form1
         Return texto.Contains("VALIDACION DE DENOMINACION") AndAlso
                texto.Contains("PARA RETIROS SIN TARJETA") AndAlso
                texto.Contains("ESTATUS OK")
+    End Function
+
+    Private Function EsMensajeConTicket(contenido As String) As Boolean
+        Return contenido.Contains("IMPRESION") OrElse
+               contenido.Contains("FOLIO.") OrElse
+               contenido.Contains("NUM-AUTORIZACION") OrElse
+               contenido.Contains("COMISION POR USO ATM") OrElse
+               contenido.Contains("TARJETA:") OrElse
+               contenido.Contains("CTA. DE AHORRO") OrElse
+               contenido.Contains("SALDO TOT.") OrElse
+               contenido.Contains("DISPONIBLE:") OrElse
+               contenido.Contains(Chr(29) & "2")
     End Function
 
     Private Sub ActivarProteccionMontosRST()
@@ -1279,14 +1327,21 @@ Public Class Form1
 
                     Dim allowScreen As Boolean = True
 
-                    If (sValue = "150" OrElse sData = "KEYPIN") AndAlso
-                       RetiroSinTarjetaDesdeWelcomePendiente() Then
+                    If sValue = "150" Then
+                        tarjetaFisicaActiva = True
+
+                        If RetiroSinTarjetaDesdeWelcomePendiente() Then
+                            LimpiarRetiroSinTarjetaDesdeWelcome()
+                        End If
+
+                        Trace("Flujo con tarjeta fisica detectado; reglas Montos_RST deshabilitadas")
+                    ElseIf sData = "KEYPIN" AndAlso RetiroSinTarjetaDesdeWelcomePendiente() Then
                         LimpiarRetiroSinTarjetaDesdeWelcome()
-                        Trace("Flujo PIN/tarjeta detectado; se cancela cobertura Montos_RST pendiente")
+                        Trace("Flujo PIN detectado; se cancela cobertura Montos_RST pendiente")
                     End If
 
                     If sValue = "300" AndAlso EsUrlWelcome(currentScreen) AndAlso
-                       RetiroSinTarjetaDesdeWelcomePendiente() Then
+                       Not tarjetaFisicaActiva AndAlso RetiroSinTarjetaDesdeWelcomePendiente() Then
                         proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(3500)
                         Trace("Ventana Montos_RST pendiente tras 300 de retiro sin tarjeta")
                     End If
@@ -1294,6 +1349,10 @@ Public Class Form1
                     If sValue = "500" OrElse sValue = "welcome" OrElse
                        sValue = "513" OrElse sValue = "hide" Then
                         LimpiarRetiroSinTarjetaDesdeWelcome()
+                    End If
+
+                    If sValue = "500" OrElse sValue = "welcome" Then
+                        tarjetaFisicaActiva = False
                     End If
 
                     If (sValue = "300" OrElse sValue = "701") AndAlso
@@ -1529,7 +1588,10 @@ Public Class Form1
             currentScreen.ToLower().Contains("menumore")
         Dim esInicioRetiroFastCash As Boolean = EsRetiroEfectivoFdk7Actual(sPotition)
         Dim esRetiroSinTarjetaWelcome As Boolean =
-            sPotition = "8" AndAlso EsUrlWelcome(currentScreen)
+            sPotition = "8" AndAlso
+            pageException = "" AndAlso
+            Not tarjetaFisicaActiva AndAlso
+            EsUrlWelcome(currentScreen)
 
         Try
             dllInterfaceNdc.showScreenNDC(300)
@@ -1589,6 +1651,7 @@ Public Class Form1
                 End If
 
                 currentScreen = urlRetornoExcepcion
+                CubrirTransicionHtml(urlRetornoExcepcion)
                 WebBrowser1.Navigate(urlRetornoExcepcion)
                 Me.Show()
             Else
@@ -1598,6 +1661,7 @@ Public Class Form1
         ElseIf esBack AndAlso Not esRegresoMenuMore Then
             fdkBack = ""
             Trace("Ejectua back FDK.. navega a lastScreen: " + lastUrl)
+            CubrirTransicionHtml(lastUrl)
             WebBrowser1.Navigate(lastUrl)
             Me.Show()
         Else
@@ -1650,6 +1714,7 @@ Public Class Form1
 
             If sUrlPendiente <> "" Then
                 currentScreen = sUrlPendiente
+                CubrirTransicionHtml(sUrlPendiente)
                 WebBrowser1.Navigate(sUrlPendiente)
             End If
         Catch ex As Exception
@@ -1730,6 +1795,7 @@ Public Class Form1
     Public Sub setBack()
         Try
             Trace("Boton regresar configurado")
+            CubrirTransicionHtml(currentScreen)
             WebBrowser1.Navigate(currentScreen)
             Me.Show()
         Catch ex As Exception
@@ -1861,6 +1927,12 @@ Public Class Form1
             Dim usarPantallaHostReferencia As Boolean =
                 urlPantallaHostReferencia <> "" AndAlso Not EsUrlMenuHost(urlPantallaHostReferencia)
             Dim esMenuHostSegunIni As Boolean = EsUrlMenuHost(urlHostCandidata)
+            Dim esMensajeConTicketHost As Boolean = EsMensajeConTicket(contenido)
+            If usarPantallaHostReferencia AndAlso pantallaHostReferencia = "300" AndAlso
+               esMenuHostSegunIni AndAlso esMensajeConTicketHost Then
+                usarPantallaHostReferencia = False
+                Trace("Referencia host 300 ignorada por ticket/impresion; se conserva menu del layout: " & urlHostCandidata)
+            End If
             Dim esError As Boolean = False
             Dim textoHost As String = NormalizarTextoHost(contenido)
             Dim codigoRechazo As String = ExtraerCodigoRechazoHost(contenido)
@@ -2153,18 +2225,9 @@ Public Class Form1
             ' Algunos mensajes de impresión no traen "TIPO DE TRANSACCION";
             ' por ejemplo consulta de saldo con impresión puede venir como P6610
             ' y contener "IMPRESION CONSULTA DE SALDO" + bloque de recibo.
-            Dim esMensajeConTicket As Boolean =
-                contenido.Contains("IMPRESION") OrElse
-                contenido.Contains("FOLIO.") OrElse
-                contenido.Contains("NUM-AUTORIZACION") OrElse
-                contenido.Contains("COMISION POR USO ATM") OrElse
-                contenido.Contains("TARJETA:") OrElse
-                contenido.Contains("CTA. DE AHORRO") OrElse
-                contenido.Contains("SALDO TOT.") OrElse
-                contenido.Contains("DISPONIBLE:") OrElse
-                contenido.Contains(Chr(29) & "2")
+            Dim esTicketImpresion As Boolean = EsMensajeConTicket(contenido)
 
-            Dim esImpresionPrematura As Boolean = esPaginaMenu AndAlso esMensajeConTicket
+            Dim esImpresionPrematura As Boolean = esPaginaMenu AndAlso esTicketImpresion
 
             If esFastCash Then
                 If waitRegresoActivo Then
@@ -2308,10 +2371,12 @@ Public Class Form1
                     menuPendienteTrasAdvertenciaFicticia = sUrl
                     Trace("Advertencia hardware local (ficticia): interceptando menu con exp-852-fic, menu real pendiente=" & sUrl)
                     currentScreen = sUrlFic
+                    CubrirTransicionHtml(sUrlFic)
                     WebBrowser1.Navigate(sUrlFic)
                 ElseIf DebeDiferirMenuPorAdvertenciaHardware(esPaginaMenu, esImpresionPrematura) Then
                     ProgramarMenuAdvertenciaHardware(sUrl)
                 Else
+                    CubrirTransicionHtml(sUrl)
                     WebBrowser1.Navigate(sUrl)
                 End If
             End If
@@ -2367,7 +2432,7 @@ Public Class Form1
                 Exit Sub
             End If
 
-            If EsMenuHtmlActual() Then
+            If EsHtmlAppScreensActual() Then
                 IniciarTransicionMenuNdc()
             End If
 
@@ -2765,6 +2830,7 @@ Public Class Form1
                     Trace("701: reutilizando menu HTML ya renderizado, sin recargar WebBrowser")
                     ProgramarOcultarWaitRegreso()
                 Else
+                    CubrirTransicionHtml(sUrlFinal)
                     WebBrowser1.Navigate(sUrlFinal)
                 End If
             Else
@@ -3202,6 +3268,7 @@ Public Class Form1
 
             If WebBrowser1 IsNot Nothing Then
                 WebBrowser1.Visible = UsarCoberturaSinOcultarPrincipal()
+                CubrirTransicionHtml(pantallaBack)
                 WebBrowser1.Navigate(pantallaBack)
             End If
 
@@ -3593,6 +3660,7 @@ Public Class Form1
                 bFastCashWaitActivo = False
                 sFastCashActivo = urlFastCashGlobal
                 currentScreen = urlFastCashGlobal
+                CubrirTransicionHtml(urlFastCashGlobal)
                 WebBrowser1.Navigate(urlFastCashGlobal)
                 Me.Show()
             End If
