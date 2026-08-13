@@ -830,7 +830,19 @@ Public Class Form1
                 Trace("Cobertura Montos_RST retirada por " & motivo)
             End If
 
-            Me.Hide()
+            If EsUrlMontosRST(currentScreen) Then
+                If WebBrowser1 IsNot Nothing Then
+                    WebBrowser1.Visible = True
+                    WebBrowser1.BringToFront()
+                End If
+
+                Me.Show()
+                Me.TopMost = True
+                Me.Activate()
+                Trace("Montos_RST permanece visible tras retirar cobertura")
+            Else
+                Me.Hide()
+            End If
         Catch ex As Exception
             Trace("Error retirando cobertura Montos_RST: " & ex.Message)
         End Try
