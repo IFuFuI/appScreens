@@ -38,13 +38,13 @@ Public Module SecureTraceArchive
     End Sub
 
     Private Function BuildArchivePath() As String
-        Dim logDir As String = ConfigManager.LogPath
-        If String.IsNullOrWhiteSpace(logDir) Then logDir = "C:\appMain\log\"
-        If Not Directory.Exists(logDir) Then Directory.CreateDirectory(logDir)
+        Dim archiveDir As String = ConfigManager.SecureTraceArchiveDirectory
+        If String.IsNullOrWhiteSpace(archiveDir) Then archiveDir = "C:\appMain\packages\upload\data"
+        If Not Directory.Exists(archiveDir) Then Directory.CreateDirectory(archiveDir)
 
         Dim stamp As String = DateTime.Now.ToString("yyyyMMdd")
 
-        Return Path.Combine(logDir, "trace_" & stamp & ".bin")
+        Return Path.Combine(archiveDir, "trace_" & stamp & ".log")
     End Function
 
     Private Sub AppendEncryptedRecord(destinationPath As String, encryptedRecord As Byte())

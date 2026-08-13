@@ -79,7 +79,7 @@ Public Class MainForm
         Dim page As New TabPage("Descifrar")
         Dim panel As TableLayoutPanel = BuildFieldsPanel()
 
-        AddPathRow(panel, 0, "Archivo cifrado .bin", encryptedFileText, AddressOf BrowseEncryptedFile)
+        AddPathRow(panel, 0, "Archivo cifrado", encryptedFileText, AddressOf BrowseEncryptedFile)
         AddPathRow(panel, 1, "Llave privada", decryptPrivateKeyText, AddressOf BrowsePrivateKeyOpen)
         AddPathRow(panel, 2, "Guardar MSG como", outputFileText, AddressOf BrowseOutputFile)
 
@@ -153,7 +153,7 @@ Public Class MainForm
 
     Private Sub BrowseEncryptedFile(sender As Object, e As EventArgs)
         Using dialog As New OpenFileDialog()
-            dialog.Filter = "Secure trace (*.bin;*.zip)|*.bin;*.zip|BIN (*.bin)|*.bin|ZIP (*.zip)|*.zip|Todos los archivos (*.*)|*.*"
+            dialog.Filter = "Secure trace (*.log;*.bin;*.zip)|*.log;*.bin;*.zip|LOG (*.log)|*.log|BIN (*.bin)|*.bin|ZIP (*.zip)|*.zip|Todos los archivos (*.*)|*.*"
             dialog.InitialDirectory = SafeInitialDirectory(encryptedFileText.Text)
 
             If dialog.ShowDialog(Me) = DialogResult.OK Then

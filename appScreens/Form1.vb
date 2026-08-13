@@ -1858,6 +1858,19 @@ Public Class Form1
             Dim rechazoHostReal As Boolean =
                 tieneRechazoHost AndAlso (codigoRechazo = "" OrElse codigoRechazo <> "000")
             Dim hostReportaProblema As Boolean = rechazoHostReal OrElse tieneRespuestaNoExitosa
+            Dim esMontosRSTResidualEnWelcome As Boolean =
+                EsContenidoMontosRST(contenido) AndAlso
+                EsUrlWelcome(currentScreen) AndAlso
+                Not RetiroSinTarjetaDesdeWelcomePendiente() AndAlso
+                Not ProteccionMontosRSTPendiente()
+
+            If esMontosRSTResidualEnWelcome Then
+                Trace("MSG Montos_RST residual ignorado en welcome; se mantiene appScreens visible. archivo=" & archivo)
+                LimpiarRetiroSinTarjetaDesdeWelcome()
+                LimpiarProteccionWelcomeHost()
+                EliminarArchivoMsgSeguro(archivo)
+                Continue For
+            End If
 
             If tieneRechazoHost OrElse tieneRespuestaNoExitosa Then
                 Trace("Decision NDC host: txn=" & ndc.CodigoTransaccion &

@@ -62,6 +62,12 @@ Public Class ConfigManager
         End Get
     End Property
 
+    Public Shared ReadOnly Property SecureTraceArchiveDirectory As String
+        Get
+            Return GetConfigValue("SecureTraceArchiveDirectory", "C:\appMain\packages\upload\data")
+        End Get
+    End Property
+
     Public Shared ReadOnly Property strRutaInterface As String
         Get
             Return GetConfigValue("strRutaInterface", "C:\appMain\work\mvInterface.ini")
