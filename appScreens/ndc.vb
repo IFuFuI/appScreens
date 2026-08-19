@@ -12,6 +12,10 @@ Public Class MensajeNDC
     Public Property Referencia As String
     Public Property Pantalla As String
     Public Property Layout As String
+    ' Solo para logging: conserva todos los comandos H/P recibidos sin cambiar
+    ' las propiedades Pantalla/Layout que usa la logica actual.
+    Public Property TodasLasPantallas As List(Of String)
+    Public Property TodosLosLayouts As List(Of String)
     Public Property DatoB As String
     Public Property DatoC As String
     Public Property DatoE As String
@@ -56,6 +60,8 @@ Public Class MensajeNDC
     ' Método para parsear el mensaje NDC
     Public Shared Function Parse(mensaje As String) As MensajeNDC
         Dim ndc As New MensajeNDC()
+        ndc.TodasLasPantallas = New List(Of String)
+        ndc.TodosLosLayouts = New List(Of String)
         Dim campos() As String = mensaje.Split(Chr(28))
 
         If campos.Length > 0 Then ndc.TipoMensaje = campos(0)
@@ -82,8 +88,14 @@ Public Class MensajeNDC
                 For Each bloque In subBloques
                     Dim comandos() As String = bloque.Split(Chr(27)) ' ESC
                     For Each cmd In comandos
-                        If cmd.StartsWith("H") Then ndc.Pantalla = cmd
-                        If cmd.StartsWith("P") Then ndc.Layout = cmd
+                        If cmd.StartsWith("H") Then
+                            ndc.Pantalla = cmd
+                            ndc.TodasLasPantallas.Add(cmd)
+                        End If
+                        If cmd.StartsWith("P") Then
+                            ndc.Layout = cmd
+                            ndc.TodosLosLayouts.Add(cmd)
+                        End If
                         If cmd.StartsWith("C") AndAlso cmd.Length > 2 Then ndc.DatoC = cmd.Substring(2).Trim()
                         If cmd.StartsWith("B") AndAlso cmd.Length > 2 Then ndc.DatoB = cmd.Substring(2).Trim()
                         If cmd.StartsWith("D") AndAlso cmd.Length > 2 Then ndc.DatoD = cmd.Substring(2).Trim()

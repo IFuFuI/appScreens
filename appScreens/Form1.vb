@@ -12,6 +12,10 @@ Public Class Form1
     Dim sCurrent As String = ""
     ' sCurrentData: Datos NDC de la pagina actula
     Dim sCurrentData As String = ""
+    ' ultimoPicNativoMostrado: solo para logging, no participa en decisiones NDC.
+    Dim ultimoPicNativoMostrado As String = ""
+    Dim ultimoEstadoNativoDetectado As String = ""
+    Dim ultimoDetalleNativoDetectado As String = ""
     ' pageException: pagina de Exepción
     Dim pageException As String = String.Empty
     ' fdkBack: variable para saber que FDK es de regreso
@@ -108,6 +112,7 @@ Public Class Form1
     Dim proteccionMontosRSTHasta As DateTime = DateTime.MinValue
     Dim proteccionMontosRSTPendienteHasta As DateTime = DateTime.MinValue
     Dim retiroSinTarjetaWelcomeHasta As DateTime = DateTime.MinValue
+    Dim retiroSinTarjetaActivo As Boolean = False
     Dim tarjetaFisicaActiva As Boolean = False
     Dim proteccionWelcomeHostHasta As DateTime = DateTime.MinValue
     Dim serviceOutController As ServiceOutController = Nothing
@@ -121,6 +126,8 @@ Public Class Form1
     Dim timeoutWaitMostradoPorToque As Boolean = False
     Dim coberturaTarjetaWelcomeActiva As Boolean = False
     Dim readCardWelcomeUrl As String = ""
+    Dim pantallaAccionActual As String = ""
+    Dim pantallaMenuActivo As String = ""
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim baseScreenIsOnException As Boolean = False
@@ -338,6 +345,23 @@ Public Class Form1
             Trace("Error procesando toque nativo: " & ex.Message)
         End Try
 
+        Try
+            If nCode >= 0 AndAlso wParam.ToInt32() = WM_LBUTTONUP AndAlso Not Me.Visible Then
+                Dim datosGenerico As MouseHookData = DirectCast(
+                    System.Runtime.InteropServices.Marshal.PtrToStructure(lParam, GetType(MouseHookData)),
+                    MouseHookData)
+                Dim zona As String = IdentificarZonaFdkPorToque(datosGenerico.Point.X, datosGenerico.Point.Y)
+                If zona <> "" Then
+                    Dim detalleNativo As String = DetallePantallaNativaActual()
+                    TraceAccionUsuario("Toque nativo en zona " & zona & " (appScreens oculto): x=" &
+                                       datosGenerico.Point.X & " y=" & datosGenerico.Point.Y &
+                                       If(detalleNativo <> "", " " & detalleNativo, " pic=desconocida"))
+                End If
+            End If
+        Catch exLog As Exception
+            Trace("[ProcesarToqueGlobal-log] Error: " & exLog.Message)
+        End Try
+
         Return CallNextHookEx(mouseHookHandle, nCode, wParam, lParam)
     End Function
 
@@ -397,6 +421,30 @@ Public Class Form1
         End Try
     End Function
 
+    Private Function EsUrlHtmlAppScreens(sUrl As String) As Boolean
+        Try
+            Dim u As String = If(sUrl, "").Trim().ToLower()
+            If u = "" Then Return False
+            If u.StartsWith("pantalla_nativa_") Then Return False
+
+            Return u.EndsWith(".html") OrElse u.EndsWith(".htm")
+        Catch ex As Exception
+            Return False
+        End Try
+    End Function
+
+    Private Sub LimpiarPantallaNativaDetectada()
+        ultimoEstadoNativoDetectado = ""
+        ultimoDetalleNativoDetectado = ""
+        ultimoPicNativoMostrado = ""
+    End Sub
+
+    Private Sub MarcarHtmlAppScreensActivo(sUrl As String)
+        If EsUrlHtmlAppScreens(sUrl) AndAlso Not EsUrlWaitTransicion(sUrl) Then
+            LimpiarPantallaNativaDetectada()
+        End If
+    End Sub
+
     Private Function EsUrlWaitTransicion(sUrl As String) As Boolean
         Dim u As String = If(sUrl, "").Trim().ToLower()
 
@@ -407,6 +455,7 @@ Public Class Form1
     Private Sub CubrirTransicionHtml(sUrlDestino As String)
         Try
             If String.IsNullOrWhiteSpace(sUrlDestino) Then Exit Sub
+            MarcarHtmlAppScreensActivo(sUrlDestino)
             If EsUrlWaitTransicion(sUrlDestino) Then Exit Sub
             If WebBrowserTienePaginaCargada(sUrlDestino) Then Exit Sub
             If waitRegresoActivo Then Exit Sub
@@ -450,7 +499,7 @@ Public Class Form1
             AddHandler timerOcultarWaitTimeout.Tick, AddressOf TimerOcultarWaitTimeout_Tick
 
             timerOcultarReadCardWelcome = New Timer()
-            timerOcultarReadCardWelcome.Interval = 3000
+            timerOcultarReadCardWelcome.Interval = 5000
             AddHandler timerOcultarReadCardWelcome.Tick, AddressOf TimerOcultarReadCardWelcome_Tick
 
             timerOcultarTimeoutInicial = New Timer()
@@ -626,7 +675,24 @@ Public Class Form1
             If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
 
             If coberturaTarjetaWelcomeActiva Then
-                FinalizarCoberturaTarjetaWelcome("fallback")
+                Dim urlWelcome As String = ReadIni("500", "PAGE", ConfigManager.ScreensFile).Trim()
+                Dim welcomeYaActivo As Boolean =
+                    urlWelcome <> "" AndAlso WebBrowserTienePaginaCargada(urlWelcome)
+
+                If HayRetiroSinTarjetaActivo() OrElse welcomeYaActivo Then
+                    CancelarCoberturaTarjetaWelcome("timeout_5s_sin_ocultar")
+                    Exit Sub
+                End If
+
+                tarjetaFisicaActiva = True
+                If RetiroSinTarjetaDesdeWelcomePendiente() Then
+                    LimpiarRetiroSinTarjetaDesdeWelcome()
+                End If
+
+                Trace("ReadCard desde welcome: timeout de 5s; se oculta para dejar ver pantalla nativa")
+                RegistrarPantallaNativaDetectada("readCard_timeout", "150")
+                currentScreen = "pantalla_nativa_texto"
+                FinalizarCoberturaTarjetaWelcome("timeout_5s")
             End If
         Catch ex As Exception
             Trace("Error ocultando readCard desde welcome: " & ex.Message, 2)
@@ -906,6 +972,7 @@ Public Class Form1
 
     Private Sub MarcarRetiroSinTarjetaDesdeWelcome()
         LimpiarProteccionWelcomeHost()
+        retiroSinTarjetaActivo = True
         retiroSinTarjetaWelcomeHasta = DateTime.Now.AddSeconds(8)
         proteccionMontosRSTPendienteHasta = DateTime.Now.AddMilliseconds(3500)
         Trace("Retiro sin tarjeta desde welcome detectado; se cubre transicion hacia Montos_RST")
@@ -915,6 +982,10 @@ Public Class Form1
         retiroSinTarjetaWelcomeHasta = DateTime.MinValue
         proteccionMontosRSTPendienteHasta = DateTime.MinValue
     End Sub
+
+    Private Function HayRetiroSinTarjetaActivo() As Boolean
+        Return retiroSinTarjetaActivo
+    End Function
 
     Private Function RetiroSinTarjetaDesdeWelcomePendiente() As Boolean
         Return DateTime.Now <= retiroSinTarjetaWelcomeHasta
@@ -1307,15 +1378,24 @@ Public Class Form1
                 MostrarWaitRetornoTimeout(sValue, sData)
             End If
 
-            If coberturaTarjetaWelcomeActiva AndAlso
-               (sValue = "150" OrElse sData = "KEYPIN") Then
+            If sValue = "hide" AndAlso EsUrlWelcome(currentScreen) Then
+                ClickEnVentana.MoverMouse00()
+                tmMsgDevices.Enabled = False
+                Trace("SCREENS.NUM recibido: hide")
 
-                FinalizarCoberturaTarjetaWelcome(If(sValue = "150", "150", "KEYPIN"))
-
-                If sValue = "150" Then
+                If CubrirInsercionTarjetaDesdeWelcome() Then
+                    Trace("Hide desde welcome cubierto inmediatamente con readCard.html")
                     writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
                     sValue = ""
                 End If
+            End If
+
+            If sValue = "150" AndAlso (coberturaTarjetaWelcomeActiva OrElse EsReadCardWelcomeVisible()) Then
+
+                CerrarReadCardPorEstado150("150")
+
+                writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
+                sValue = ""
             End If
 
             If sValue <> "" Then
@@ -1329,6 +1409,7 @@ Public Class Form1
 
                     If sValue = "150" Then
                         tarjetaFisicaActiva = True
+                        retiroSinTarjetaActivo = False
 
                         If RetiroSinTarjetaDesdeWelcomePendiente() Then
                             LimpiarRetiroSinTarjetaDesdeWelcome()
@@ -1346,13 +1427,15 @@ Public Class Form1
                         Trace("Ventana Montos_RST pendiente tras 300 de retiro sin tarjeta")
                     End If
 
-                    If sValue = "500" OrElse sValue = "welcome" OrElse
-                       sValue = "513" OrElse sValue = "hide" Then
+                    If sValue = "500" OrElse sValue = "welcome" Then
+                        retiroSinTarjetaActivo = False
                         LimpiarRetiroSinTarjetaDesdeWelcome()
                     End If
 
                     If sValue = "500" OrElse sValue = "welcome" Then
                         tarjetaFisicaActiva = False
+                        retiroSinTarjetaActivo = False
+                        CancelarCoberturaTarjetaWelcome("Timer1 " & sValue)
                     End If
 
                     If (sValue = "300" OrElse sValue = "701") AndAlso
@@ -1568,10 +1651,7 @@ Public Class Form1
             Dim statusDevice As String = ReadIni("CDM STATUS", "Device", ConfigManager.workFileDevices).Trim().ToUpper()
             Dim statusFwDevice As String = ReadIni("CDM STATUS", "fwDevice", ConfigManager.workFileDevices).Trim().ToUpper()
 
-            Dim status As String = If(statusDevice <> "", statusDevice, statusFwDevice)
-
-            ' Ignoramos estados transitorios donde el dispensador está en movimiento post-retiro
-            If status <> "ONLINE" AndAlso status <> "OK" AndAlso status <> "READY" AndAlso status <> "" AndAlso status <> "BUSY" AndAlso status <> "DISPENSING" Then
+            If EstadoCdmIndicaError(statusDevice) OrElse EstadoCdmIndicaError(statusFwDevice) Then
                 Return True
             End If
 
@@ -1582,7 +1662,292 @@ Public Class Form1
         End Try
     End Function
 
+    Private Function EstadoCdmIndicaError(status As String) As Boolean
+        status = If(status, "").Trim().ToUpper()
+
+        ' Ignoramos estados transitorios donde el dispensador está en movimiento post-retiro.
+        Return status <> "" AndAlso
+               status <> "ONLINE" AndAlso
+               status <> "OK" AndAlso
+               status <> "READY" AndAlso
+               status <> "BUSY" AndAlso
+               status <> "DISPENSING"
+    End Function
+
+    ' ===== Logging de acciones de usuario (pantallas/FDK) =====
+    ' Activable con [TRACE] USER_ACTIONS=TRUE en appConfig.ini.
+    ' Escribe a yyyyMMdd_appScreens_acciones.log y nunca participa en decisiones NDC.
+    Private Sub TraceAccionUsuario(strTexto As String, Optional level As Integer = 0)
+        Try
+            Dim sFlag As String = ReadIni("TRACE", "USER_ACTIONS", ConfigManager.ConfigFile)
+            If Not sFlag.Trim().Equals("TRUE", StringComparison.OrdinalIgnoreCase) Then Exit Sub
+
+            Dim logDir As String = ConfigManager.LogPath
+            If String.IsNullOrWhiteSpace(logDir) Then logDir = "C:\appMain\log\"
+            If Not Directory.Exists(logDir) Then Directory.CreateDirectory(logDir)
+
+            Dim nivel As String = "INFO"
+            Select Case level
+                Case 1 : nivel = "WARN"
+                Case 2 : nivel = "ERROR"
+                Case 3 : nivel = "DEBUG"
+            End Select
+
+            Dim prefix As String = Format(Now(), "dd-MM-yyyy HH:mm:ss.fff tt") &
+                "      [" & nivel & "] [PID:" & Process.GetCurrentProcess().Id & "] "
+
+            File.AppendAllText(
+                Path.Combine(logDir, Format(Now(), "yyyyMMdd") & "_appScreens_acciones.log"),
+                prefix & strTexto & vbCrLf)
+        Catch ex As Exception
+            Try
+                Trace("[TraceAccionUsuario] Error: " & ex.Message)
+            Catch
+            End Try
+        End Try
+    End Sub
+
+    Private Function RutaCatalogoAcciones() As String
+        Try
+            Dim dir As String = Path.GetDirectoryName(ConfigManager.ScreensFile)
+            Return Path.Combine(dir, "appScreensCatalogo.ini")
+        Catch ex As Exception
+            Trace("[RutaCatalogoAcciones] Error: " & ex.Message)
+            Return ConfigManager.ScreensFile
+        End Try
+    End Function
+
+    Private Function BuscarNombrePantalla(sEstado As String) As String
+        Try
+            If sEstado Is Nothing OrElse sEstado.Trim() = "" Then Return "sin catalogar"
+            Dim sDesc As String = ReadIni(sEstado, "DESC", RutaCatalogoAcciones()).Trim()
+            If sDesc <> "" Then Return sDesc
+        Catch ex As Exception
+            Trace("[BuscarNombrePantalla] Error: " & ex.Message)
+        End Try
+        Return "sin catalogar"
+    End Function
+
+    Private Function BuscarAccionFdk(sEstado As String, sFdk As String) As String
+        Try
+            If sEstado Is Nothing OrElse sEstado.Trim() = "" Then Return "sin catalogar"
+            Dim sDesc As String = ReadIni(sEstado & "_FDK", sFdk, RutaCatalogoAcciones()).Trim()
+            If sDesc <> "" Then Return sDesc
+        Catch ex As Exception
+            Trace("[BuscarAccionFdk] Error: " & ex.Message)
+        End Try
+        Return "sin catalogar"
+    End Function
+
+    Private Function ResolverEstadoAccionActual(estadoFallback As String) As String
+        Try
+            If pantallaAccionActual.Trim() <> "" Then Return pantallaAccionActual.Trim()
+        Catch ex As Exception
+        End Try
+
+        Return If(estadoFallback, "").Trim()
+    End Function
+
+    Private Function BuscarNombrePic(sPic As String) As String
+        Try
+            If sPic Is Nothing OrElse sPic.Trim() = "" Then Return "sin catalogar"
+            Dim sDesc As String = ReadIni("PIC", sPic, RutaCatalogoAcciones()).Trim()
+            If sDesc <> "" Then Return sDesc
+        Catch ex As Exception
+            Trace("[BuscarNombrePic] Error: " & ex.Message)
+        End Try
+        Return "sin catalogar"
+    End Function
+
+    Private Function RutaArchivoNativoPorCodigo(sCodigo As String) As String
+        Try
+            If sCodigo Is Nothing OrElse sCodigo.Trim() = "" Then Return ""
+
+            Dim numero As Integer
+            If Not Integer.TryParse(sCodigo.Trim(), numero) Then Return ""
+
+            Dim rutaBase As String = ReadIni("PARAM", "NCR_SCREENS_PATH", ConfigManager.ScreensFile).Trim()
+            If rutaBase = "" Then rutaBase = "C:\Program Files (x86)\NCR APTRA\Advance NDC\Screens\"
+            If Not rutaBase.EndsWith("\") Then rutaBase &= "\"
+
+            Dim rutaArchivo As String = rutaBase & "u" & numero.ToString("0000") & ".NDCACSDF"
+            Return rutaArchivo
+        Catch ex As Exception
+            Trace("[RutaArchivoNativoPorCodigo] Error resolviendo definicion nativa")
+            Return ""
+        End Try
+    End Function
+
+    Private Function LeerArchivoNativoPorCodigo(sCodigo As String) As String
+        Try
+            Dim rutaArchivo As String = RutaArchivoNativoPorCodigo(sCodigo)
+            If rutaArchivo = "" Then Return ""
+            If Not File.Exists(rutaArchivo) Then Return ""
+
+            Dim xml As XElement = XElement.Load(rutaArchivo)
+            Dim grafico As XElement = xml.Descendants("Graphic").FirstOrDefault()
+            If grafico Is Nothing Then Return ""
+
+            Dim atributoPath As XAttribute = grafico.Attribute("Path")
+            If atributoPath Is Nothing OrElse String.IsNullOrWhiteSpace(atributoPath.Value) Then Return ""
+
+            Return Path.GetFileName(atributoPath.Value)
+        Catch ex As Exception
+            Trace("[LeerArchivoNativoPorCodigo] Error leyendo definicion nativa")
+            Return ""
+        End Try
+    End Function
+
+    Private Function LeerDetallePicNativoPorCodigo(sCodigo As String) As String
+        Try
+            If sCodigo Is Nothing OrElse sCodigo.Trim() = "" Then Return ""
+
+            Dim numero As Integer
+            If Not Integer.TryParse(sCodigo.Trim(), numero) Then Return ""
+
+            Dim rutaArchivo As String = RutaArchivoNativoPorCodigo(sCodigo)
+            If rutaArchivo = "" OrElse Not File.Exists(rutaArchivo) Then Return ""
+
+            Dim xml As XElement = XElement.Load(rutaArchivo)
+            Dim grafico As XElement = xml.Descendants("Graphic").FirstOrDefault()
+            If grafico Is Nothing Then Return ""
+
+            Dim atributoPath As XAttribute = grafico.Attribute("Path")
+            If atributoPath Is Nothing OrElse String.IsNullOrWhiteSpace(atributoPath.Value) Then Return ""
+
+            Dim picPath As String = atributoPath.Value.Trim()
+            Dim picNombre As String = Path.GetFileName(picPath)
+            Dim detalle As String = "estadoNativo=" & numero.ToString("000") &
+                                    " pic=" & picNombre
+
+            If picPath <> "" AndAlso Not picPath.Equals(picNombre, StringComparison.OrdinalIgnoreCase) Then
+                detalle &= " picPath=" & picPath
+            End If
+
+            Return detalle
+        Catch ex As Exception
+            Trace("[LeerDetallePicNativoPorCodigo] Error leyendo definicion nativa")
+            Return ""
+        End Try
+    End Function
+
+    Private Function LeerPicNativoDesdeNCR(sEstado As String, Optional sEstadoAlterno As String = "") As String
+        Dim resultado As String = LeerArchivoNativoPorCodigo(sEstado)
+        If resultado <> "" Then Return resultado
+        If sEstadoAlterno <> "" Then Return LeerArchivoNativoPorCodigo(sEstadoAlterno)
+        Return ""
+    End Function
+
+    Private Function LeerDetallePicNativoDesdeNCR(sEstado As String, Optional sEstadoAlterno As String = "") As String
+        Dim resultado As String = LeerDetallePicNativoPorCodigo(sEstado)
+        If resultado <> "" Then Return resultado
+        If sEstadoAlterno <> "" Then Return LeerDetallePicNativoPorCodigo(sEstadoAlterno)
+        Return ""
+    End Function
+
+    Private Function RegistrarPantallaNativaDetectada(origen As String,
+                                                       estado As String,
+                                                       Optional estadoAlterno As String = "",
+                                                       Optional emitirLog As Boolean = True) As String
+        Try
+            Dim detalle As String = LeerDetallePicNativoDesdeNCR(estado, estadoAlterno)
+            If detalle = "" Then
+                detalle = "estadoNativo=" & If(estado, "").Trim() & " pic=desconocida"
+            End If
+
+            ultimoEstadoNativoDetectado = If(estado, "").Trim()
+            ultimoDetalleNativoDetectado = detalle
+
+            If emitirLog Then
+                TraceAccionUsuario("Pantalla nativa detectada. origen=" & origen & " " & detalle)
+            End If
+
+            Return detalle
+        Catch ex As Exception
+            Trace("[RegistrarPantallaNativaDetectada] Error: " & ex.Message)
+            Return ""
+        End Try
+    End Function
+
+    Private Function RegistrarPicNativoExplicito(origen As String, estado As String, pic As String) As String
+        Try
+            ultimoPicNativoMostrado = If(pic, "").Trim()
+            ultimoEstadoNativoDetectado = If(estado, "").Trim()
+            ultimoDetalleNativoDetectado = "estadoNativo=" & ultimoEstadoNativoDetectado &
+                                           " pic=" & ultimoPicNativoMostrado
+            Return ultimoDetalleNativoDetectado
+        Catch ex As Exception
+            Trace("[RegistrarPicNativoExplicito] Error: " & ex.Message)
+            Return ""
+        End Try
+    End Function
+
+    Private Function DetallePantallaNativaActual() As String
+        Try
+            If ultimoDetalleNativoDetectado.Trim() <> "" Then Return ultimoDetalleNativoDetectado.Trim()
+            If EsHtmlAppScreensActual() Then Return ""
+
+            Dim detalle As String = LeerDetallePicNativoDesdeNCR(pantallaAccionActual)
+            If detalle <> "" Then
+                ultimoDetalleNativoDetectado = detalle
+                Return detalle
+            End If
+
+            detalle = LeerDetallePicNativoDesdeNCR(sCurrent)
+            If detalle <> "" Then
+                ultimoDetalleNativoDetectado = detalle
+                Return detalle
+            End If
+
+            If ultimoPicNativoMostrado.Trim() <> "" Then
+                Return "pic=" & ultimoPicNativoMostrado.Trim()
+            End If
+        Catch ex As Exception
+            Trace("[DetallePantallaNativaActual] Error: " & ex.Message)
+        End Try
+
+        Return "pic=desconocida"
+    End Function
+
+    Private Function IdentificarZonaFdkPorToque(x As Integer, y As Integer) As String
+        Try
+            Dim pantalla As Rectangle = ClickEnVentana.ObtenerRectanguloVentana(screenEventTo)
+            If pantalla.IsEmpty Then pantalla = Screen.FromHandle(Me.Handle).Bounds
+
+            Dim escalaX As Double = pantalla.Width / 1024.0
+            Dim escalaY As Double = pantalla.Height / 768.0
+            Dim posicionesY() As Integer = {296, 440, 574, 713}
+            Dim toleranciaX As Integer = Math.Max(120, CInt(200 * escalaX))
+            Dim toleranciaY As Integer = Math.Max(55, CInt(85 * escalaY))
+
+            For fdk As Integer = 1 To 8
+                Dim xReferencia As Integer = If(fdk <= 4, 177, 850)
+                Dim yReferencia As Integer = posicionesY((fdk - 1) Mod 4)
+                Dim centroX As Integer = pantalla.Left + CInt(xReferencia * escalaX)
+                Dim centroY As Integer = pantalla.Top + CInt(yReferencia * escalaY)
+
+                If Math.Abs(x - centroX) <= toleranciaX AndAlso Math.Abs(y - centroY) <= toleranciaY Then
+                    Return "FDK" & fdk
+                End If
+            Next
+        Catch ex As Exception
+            Trace("[IdentificarZonaFdkPorToque] Error: " & ex.Message)
+        End Try
+        Return ""
+    End Function
+
     Public Sub clickPage(sPotition As String)
+        Dim estadoAlPresionar As String = ResolverEstadoAccionActual(sCurrent)
+        Try
+            Dim descripcionFdk As String = BuscarAccionFdk(estadoAlPresionar, sPotition)
+            TraceAccionUsuario("FDK presionado=" & sPotition & " (" & descripcionFdk &
+                               ") estado=" & estadoAlPresionar &
+                               If(sCurrent <> "" AndAlso sCurrent <> estadoAlPresionar, " estadoNdc=" & sCurrent, "") &
+                               " pantalla=" & currentScreen)
+        Catch ex As Exception
+            Trace("[clickPage-log] Error: " & ex.Message)
+        End Try
+
         Dim esRegresoMenuMore As Boolean =
             sPotition = "4" AndAlso
             currentScreen.ToLower().Contains("menumore")
@@ -1595,6 +1960,7 @@ Public Class Form1
 
         Try
             dllInterfaceNdc.showScreenNDC(300)
+            RegistrarPantallaNativaDetectada("clickPage_300", "300", "", False)
         Catch ex As Exception
             Trace("Error al mandar interface")
         End Try
@@ -1651,6 +2017,9 @@ Public Class Form1
                 End If
 
                 currentScreen = urlRetornoExcepcion
+                If urlRetornoExcepcion = sMenuActivo AndAlso pantallaMenuActivo <> "" Then
+                    pantallaAccionActual = pantallaMenuActivo
+                End If
                 CubrirTransicionHtml(urlRetornoExcepcion)
                 WebBrowser1.Navigate(urlRetornoExcepcion)
                 Me.Show()
@@ -1714,6 +2083,7 @@ Public Class Form1
 
             If sUrlPendiente <> "" Then
                 currentScreen = sUrlPendiente
+                If pantallaMenuActivo <> "" Then pantallaAccionActual = pantallaMenuActivo
                 CubrirTransicionHtml(sUrlPendiente)
                 WebBrowser1.Navigate(sUrlPendiente)
             End If
@@ -1879,6 +2249,10 @@ Public Class Form1
         Dim protegerHostReferenciaEnLote As Boolean = False
         Dim pantallaHostReferenciaEnLote As String = ""
         Dim urlHostReferenciaEnLote As String = ""
+        Dim ultimoLayoutNdcLog As String = ""
+        Dim ultimaTxnNdcLog As String = ""
+        Dim ultimosLayoutsNdcLog As New List(Of String)
+        Dim ultimasPantallasNdcLog As New List(Of String)
 
         For Each archivo In archivos
             If EsArchivoMsgObsoleto(archivo) Then
@@ -1901,6 +2275,10 @@ Public Class Form1
             End If
 
             Dim ndc = MensajeNDC.Parse(contenido)
+            ultimoLayoutNdcLog = ndc.Layout
+            ultimaTxnNdcLog = ndc.CodigoTransaccion
+            ultimosLayoutsNdcLog = ndc.TodosLosLayouts
+            ultimasPantallasNdcLog = ndc.TodasLasPantallas
 
             If HayExcepcionEsperandoRespuesta() Then
                 RegistrarMenuHostSinNavegar(ndc, archivo)
@@ -1994,6 +2372,10 @@ Public Class Form1
                         pantallaHostReferenciaEnLote = pantallaHostReferencia
                         urlHostReferenciaEnLote = urlPantallaHostReferencia
                         LoadHoleConfigFromIni(sPage)
+                        pantallaAccionActual = sPage
+                        TraceAccionUsuario("NDC layout=" & ndc.Layout & " pantallaHost=" & ndc.Pantalla &
+                                           " referencia=" & pantallaHostReferencia &
+                                           " pageAccion=" & sPage & " url=" & sUrl)
                         Trace("Host envio rechazo con pantalla " & sPage & " configurada; se permite HTML: " & sUrl)
                     ElseIf esMenuHostSegunIni Then
                         Trace("Host envio rechazo/codigo no-000 con PAGE de menu por INI; se permite menu host: " & urlHostCandidata)
@@ -2117,6 +2499,9 @@ Public Class Form1
 
                     sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
                     LoadHoleConfigFromIni(sPage)
+                    pantallaAccionActual = sPage
+                    TraceAccionUsuario("NDC layout=" & ndc.Layout & " pantallaHost=" & ndc.Pantalla &
+                                       " pageAccion=" & sPage & " url=" & sUrl)
                     Trace("sURL Msg: " & sUrl)
 
                     If sUrl = "" Then
@@ -2133,6 +2518,9 @@ Public Class Form1
                 keepCustomErrorPageActive = True
                 isHostError = False
                 isExpetionClosePageNDC = False
+                pantallaAccionActual = sPage
+                TraceAccionUsuario("NDC layout=" & ndc.Layout & " pantallaHost=" & ndc.Pantalla &
+                                   " pageAccion=" & sPage & " url=" & sUrl)
                 Trace("Rechazo retiro sin efectivo detectado; mostrando pantalla custom: " & sUrl)
             End If
 
@@ -2142,6 +2530,9 @@ Public Class Form1
                 sPage = sPage.Replace("P", "")
                 sUrl = ReadIni(sPage, "PAGE", ConfigManager.ScreensFile)
                 LoadHoleConfigFromIni(sPage)
+                pantallaAccionActual = sPage
+                TraceAccionUsuario("NDC layout=" & ndc.Layout & " pantallaHost=" & ndc.Pantalla &
+                                   " pageAccion=" & sPage & " url=" & sUrl)
                 Trace("sURL Msg: " & sUrl)
 
                 If esRechazoPrestamoDigitalConPantallaPropia AndAlso sUrl <> "" Then
@@ -2165,6 +2556,10 @@ Public Class Form1
                     bPantalla = True
                     sUrl = fallbackUrl
                     LoadHoleConfigFromIni(sPage)
+                    pantallaAccionActual = sPage
+                    TraceAccionUsuario("NDC txnFallback=" & ndc.CodigoTransaccion &
+                                       " layout=" & ndc.Layout & " pantallaHost=" & ndc.Pantalla &
+                                       " pageAccion=" & sPage & " url=" & sUrl)
                     Trace("sURL Msg Fallback State (" & sPage & "): " & sUrl)
 
                     keepCustomErrorPageActive = True
@@ -2259,6 +2654,7 @@ Public Class Form1
             tmOut.Enabled = True
             lastUrl = currentScreen
             currentScreen = sUrl
+            MarcarHtmlAppScreensActivo(sUrl)
             bNDCPageActive = True
 
             If protegerHostReferenciaEnLote Then
@@ -2281,6 +2677,8 @@ Public Class Form1
                 ' Este se mantiene como menú activo hasta que otro menú lo reemplace.
                 sMenuActivo = sUrl
                 sLastMenuUrl = sUrl
+                pantallaMenuActivo = sPage
+                pantallaAccionActual = sPage
                 Trace("Menu activo actualizado por host: " & sMenuActivo)
             End If
 
@@ -2315,6 +2713,7 @@ Public Class Form1
                         sUrl = urlFalta
                         currentScreen = urlFalta
                         LoadHoleConfigFromIni(pantallaFalta)
+                        pantallaAccionActual = pantallaFalta
                     End If
                 Else
                     If esFastCash Then
@@ -2335,6 +2734,8 @@ Public Class Form1
                 ' Ejemplo: menu661.html después de imprimir consulta de saldo.
                 sMenuActivo = sUrl
                 sLastMenuUrl = sUrl
+                pantallaMenuActivo = sPage
+                pantallaAccionActual = sPage
                 Trace("Menu activo actualizado por impresion: " & sMenuActivo)
 
                 Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile)
@@ -2371,6 +2772,7 @@ Public Class Form1
                     menuPendienteTrasAdvertenciaFicticia = sUrl
                     Trace("Advertencia hardware local (ficticia): interceptando menu con exp-852-fic, menu real pendiente=" & sUrl)
                     currentScreen = sUrlFic
+                    pantallaAccionActual = "852FIC"
                     CubrirTransicionHtml(sUrlFic)
                     WebBrowser1.Navigate(sUrlFic)
                 ElseIf DebeDiferirMenuPorAdvertenciaHardware(esPaginaMenu, esImpresionPrematura) Then
@@ -2396,6 +2798,14 @@ Public Class Form1
                 Try
                     dllInterfaceNdc.showScreenNDC(CInt(sImagen))
                     Trace("Mostrando pantalla nativa por PIC")
+                    Try
+                        Dim detalleNativo As String = RegistrarPicNativoExplicito("procesaDatosNDC", sPage, sImagen)
+                        TraceAccionUsuario("Pantalla nativa por PIC. estado=" & sPage & " pic=" &
+                                           sImagen & " (" & BuscarNombrePic(sImagen) & ")" &
+                                           If(detalleNativo <> "", " " & detalleNativo, ""))
+                    Catch exLog As Exception
+                        Trace("[procesaDatosNDC-log] Error: " & exLog.Message)
+                    End Try
                     ocultarPantalla()
 
                     bNDCPageActive = True
@@ -2405,6 +2815,30 @@ Public Class Form1
                 End Try
             Else
                 If bPantalla = True Then
+                    Try
+                        Dim pantallaAlterna As String = ""
+                        If ultimasPantallasNdcLog IsNot Nothing AndAlso ultimasPantallasNdcLog.Count > 0 Then
+                            pantallaAlterna = ultimasPantallasNdcLog(ultimasPantallasNdcLog.Count - 1).Replace("H", "")
+                        End If
+
+                        Dim detalleNativo As String = RegistrarPantallaNativaDetectada("procesaDatosNDC", sPage, pantallaAlterna, False)
+                        Dim layoutsExtra As String = ""
+                        Dim pantallasExtra As String = ""
+
+                        If ultimosLayoutsNdcLog IsNot Nothing AndAlso ultimosLayoutsNdcLog.Count > 1 Then
+                            layoutsExtra = " layoutsCompletos=" & String.Join(",", ultimosLayoutsNdcLog)
+                        End If
+                        If ultimasPantallasNdcLog IsNot Nothing AndAlso ultimasPantallasNdcLog.Count > 1 Then
+                            pantallasExtra = " pantallasCompletas=" & String.Join(",", ultimasPantallasNdcLog)
+                        End If
+
+                        TraceAccionUsuario("Pantalla nativa por texto (sin PAGE/PIC). estado=" & sPage &
+                                           " layout=" & ultimoLayoutNdcLog & " txn=" & ultimaTxnNdcLog &
+                                           If(detalleNativo <> "", " " & detalleNativo, "") &
+                                           layoutsExtra & pantallasExtra)
+                    Catch exLog As Exception
+                        Trace("[procesaDatosNDC-log] Error: " & exLog.Message)
+                    End Try
                     ocultarPantalla()
 
                     bNDCPageActive = True
@@ -2424,6 +2858,12 @@ Public Class Form1
         Dim sImagen As String = String.Empty
         Dim sDataEnable As String = String.Empty
         Dim sIdioma As String
+
+        Try
+            TraceAccionUsuario("Estado NDC recibido=" & sValue & " (" & BuscarNombrePantalla(sValue) & ")")
+        Catch ex As Exception
+            Trace("[ProcesarPantalla-log] Error: " & ex.Message)
+        End Try
 
         If sValue = "300" Then
             If ProteccionMontosRSTActiva() Then
@@ -2647,6 +3087,9 @@ Public Class Form1
 
             If sValue = "500" Then
                 ActivarProteccionWelcomeHost()
+                CancelarCoberturaTarjetaWelcome("nueva sesion 500")
+                retiroSinTarjetaActivo = False
+                LimpiarRetiroSinTarjetaDesdeWelcome()
                 CancelarMenuAdvertenciaHardwarePendiente("500")
                 advertenciaHardwareActiva = False
                 advertenciaDenominacionMostrada = False
@@ -2654,6 +3097,8 @@ Public Class Form1
                 menuPendienteTrasAdvertenciaFicticia = ""
                 sMenuActivo = ""
                 sLastMenuUrl = ""
+                pantallaMenuActivo = ""
+                pantallaAccionActual = "500"
                 Trace("Nueva sesion detectada")
             End If
 
@@ -2813,6 +3258,7 @@ Public Class Form1
                     Trace("701 desde wait con FastCash activo; regresando a FastCash=" & sUrlFinal)
                 ElseIf sValue = "701" AndAlso sMenuActivo <> "" AndAlso sUrl.ToLower().EndsWith("menu.html") Then
                     sUrlFinal = sMenuActivo
+                    If pantallaMenuActivo <> "" Then pantallaAccionActual = pantallaMenuActivo
                     Trace("701 base INI=" & sUrl & " redirigido a menu activo=" & sUrlFinal)
                 End If
 
@@ -2821,6 +3267,13 @@ Public Class Form1
                 If pageException = "" AndAlso
                    Not (sUrlFinal.ToLower().Contains("wait") OrElse sUrlFinal.ToLower().Contains("read")) Then
                     currentScreen = sUrlFinal
+                    MarcarHtmlAppScreensActivo(sUrlFinal)
+                End If
+
+                If sValue <> "300" AndAlso sValue <> "200" AndAlso Not EsUrlWaitTransicion(sUrlFinal) Then
+                    If Not (sValue = "701" AndAlso pantallaMenuActivo <> "" AndAlso sUrl.ToLower().EndsWith("menu.html")) Then
+                        pantallaAccionActual = sValue
+                    End If
                 End If
 
                 Trace("Navega page Url: " + sUrlFinal)
@@ -2839,6 +3292,14 @@ Public Class Form1
                 If sImagen <> "" Then
                     Try
                         dllInterfaceNdc.showScreenNDC(CInt(sImagen))
+                        Try
+                            Dim detalleNativo As String = RegistrarPicNativoExplicito("ProcesarPantalla", sValue, sImagen)
+                            TraceAccionUsuario("Pantalla nativa por PIC (ProcesarPantalla). estado=" &
+                                               sValue & " pic=" & sImagen & " (" & BuscarNombrePic(sImagen) & ")" &
+                                               If(detalleNativo <> "", " " & detalleNativo, ""))
+                        Catch exLog As Exception
+                            Trace("[ProcesarPantalla-log] Error: " & exLog.Message)
+                        End Try
                     Catch ex As Exception
                         Trace("Error al mandar interface en PIC")
                     End Try
@@ -2847,7 +3308,16 @@ Public Class Form1
                         Trace("Pagina 701 anidada")
                     Else
                         If sValue <> "back" Then
-                            If sValue <> "hide" Then Trace("Estado sin PAGE/PIC configurado")
+                            If sValue <> "hide" Then
+                                Trace("Estado sin PAGE/PIC configurado")
+                                Try
+                                    Dim detalleNativo As String = RegistrarPantallaNativaDetectada("ProcesarPantalla", sValue, "", False)
+                                    TraceAccionUsuario("Pantalla nativa por texto (sin PAGE/PIC, ProcesarPantalla). estado=" &
+                                                       sValue & If(detalleNativo <> "", " " & detalleNativo, ""))
+                                Catch exLog As Exception
+                                    Trace("[ProcesarPantalla-log] Error: " & exLog.Message)
+                                End Try
+                            End If
                             sValue = "hide"
                         End If
                     End If
@@ -2901,8 +3371,21 @@ Public Class Form1
     Private Function CubrirInsercionTarjetaDesdeWelcome() As Boolean
         Try
             If coberturaTarjetaWelcomeActiva Then Return False
-            If Not Me.Visible Then Return False
-            If Not EsUrlWelcome(currentScreen) Then Return False
+            If HayRetiroSinTarjetaActivo() Then
+                Trace("ReadCard omitido: flujo de retiro sin tarjeta activo")
+                Return False
+            End If
+            If tarjetaFisicaActiva Then
+                Trace("ReadCard omitido: tarjeta fisica ya detectada")
+                Return False
+            End If
+
+            Dim vieneDeWelcome As Boolean = EsUrlWelcome(currentScreen)
+            If Not vieneDeWelcome Then
+                Dim urlWelcome As String = ReadIni("500", "PAGE", ConfigManager.ScreensFile).Trim()
+                vieneDeWelcome = urlWelcome <> "" AndAlso WebBrowserTienePaginaCargada(urlWelcome)
+            End If
+            If Not vieneDeWelcome Then Return False
 
             LimpiarProteccionWelcomeHost()
 
@@ -2922,15 +3405,23 @@ Public Class Form1
             sCurrent = ""
             sCurrentData = ""
 
-            If WebBrowser1 IsNot Nothing Then
-                WebBrowser1.Visible = True
-                WebBrowser1.BringToFront()
-                WebBrowser1.Navigate(urlReadCard)
-            End If
-
             Me.Show()
             Me.TopMost = True
             Me.Activate()
+
+            If WebBrowser1 IsNot Nothing Then
+                WebBrowser1.Visible = True
+                WebBrowser1.BringToFront()
+                MarcarHtmlAppScreensActivo(urlReadCard)
+                WebBrowser1.Navigate(urlReadCard)
+            End If
+
+            If timerOcultarReadCardWelcome IsNot Nothing Then
+                timerOcultarReadCardWelcome.Stop()
+                timerOcultarReadCardWelcome.Interval = 5000
+                timerOcultarReadCardWelcome.Start()
+            End If
+
             Trace("ReadCard mostrado por salida de welcome")
             Return True
         Catch ex As Exception
@@ -2940,11 +3431,65 @@ Public Class Form1
         End Try
     End Function
 
+    Private Sub CancelarCoberturaTarjetaWelcome(origen As String)
+        Try
+            If Not coberturaTarjetaWelcomeActiva AndAlso
+               (timerOcultarReadCardWelcome Is Nothing OrElse Not timerOcultarReadCardWelcome.Enabled) Then Exit Sub
+
+            coberturaTarjetaWelcomeActiva = False
+            readCardWelcomeUrl = ""
+            If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
+            Trace("ReadCard desde welcome cancelado sin ocultar appScreens: origen=" & origen)
+        Catch ex As Exception
+            Trace("Error cancelando readCard desde welcome: " & ex.Message, 2)
+        End Try
+    End Sub
+
+    Private Function EsReadCardWelcomeVisible() As Boolean
+        Try
+            Dim urlReadCard As String = readCardWelcomeUrl
+            If String.IsNullOrWhiteSpace(urlReadCard) Then
+                urlReadCard = ReadIni("200", "PAGE", ConfigManager.ScreensFile).Trim()
+            End If
+
+            Return urlReadCard <> "" AndAlso WebBrowserTienePaginaCargada(urlReadCard)
+        Catch ex As Exception
+            Trace("Error evaluando readCard visible: " & ex.Message, 2)
+            Return False
+        End Try
+    End Function
+
+    Private Sub CerrarReadCardPorEstado150(origen As String)
+        Try
+            tarjetaFisicaActiva = True
+            retiroSinTarjetaActivo = False
+            If RetiroSinTarjetaDesdeWelcomePendiente() Then
+                LimpiarRetiroSinTarjetaDesdeWelcome()
+            End If
+
+            Trace("Flujo con tarjeta fisica detectado; readCard se cierra al llegar 150")
+            RegistrarPantallaNativaDetectada("readCard_150", "150")
+            currentScreen = "pantalla_nativa_texto"
+
+            If coberturaTarjetaWelcomeActiva Then
+                FinalizarCoberturaTarjetaWelcome(origen)
+            Else
+                readCardWelcomeUrl = ""
+                If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
+                Trace("ReadCard desde welcome finalizado: origen=" & origen & " sin bandera activa")
+                ocultarPantalla()
+            End If
+        Catch ex As Exception
+            Trace("Error cerrando readCard por 150: " & ex.Message, 2)
+        End Try
+    End Sub
+
     Private Sub FinalizarCoberturaTarjetaWelcome(origen As String)
         Try
             If Not coberturaTarjetaWelcomeActiva Then Exit Sub
 
             coberturaTarjetaWelcomeActiva = False
+            readCardWelcomeUrl = ""
             If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
 
             Trace("ReadCard desde welcome finalizado: origen=" & origen)
@@ -3318,7 +3863,9 @@ Public Class Form1
     End Sub
 
     Private Sub checkEstusCdm()
-        Dim sEstatusCdm As String = ReadIni("CDM STATUS", "fwDevice", ConfigManager.workFileDevices)
+        Dim sEstatusCdmDevice As String = ReadIni("CDM STATUS", "Device", ConfigManager.workFileDevices).Trim()
+        Dim sEstatusCdmFwDevice As String = ReadIni("CDM STATUS", "fwDevice", ConfigManager.workFileDevices).Trim()
+        Dim sEstatusCdm As String = "Device=" & sEstatusCdmDevice & " fwDevice=" & sEstatusCdmFwDevice
         Try
             If sEstatusCdm <> sErrorCdm Then
                 sErrorCdm = sEstatusCdm
@@ -3345,8 +3892,12 @@ Public Class Form1
 
             ' Solo imprimimos el estado si el temporizador lo permite
             If imprimirLog Then
+                Dim sEstatusCdmDevice As String = ReadIni("CDM STATUS", "Device", ConfigManager.workFileDevices).Trim()
+                Dim sEstatusCdmFwDevice As String = ReadIni("CDM STATUS", "fwDevice", ConfigManager.workFileDevices).Trim()
                 Trace("Cassettes (Tiene Billetes): C1=" & c1 & " C2=" & c2 & " C3=" & c3 & " C4=" & c4)
-                Trace("IsCdmError?: " & IsCdmError().ToString())
+                Trace("IsCdmError?: " & IsCdmError().ToString() &
+                      " Device=" & sEstatusCdmDevice &
+                      " fwDevice=" & sEstatusCdmFwDevice)
             End If
 
             AplicarEstadoDispositivosEnHtml("temporizador", imprimirLog)
@@ -3470,13 +4021,14 @@ Public Class Form1
 
                         If timerOcultarReadCardWelcome IsNot Nothing Then
                             timerOcultarReadCardWelcome.Stop()
+                            timerOcultarReadCardWelcome.Interval = 5000
                             timerOcultarReadCardWelcome.Start()
                         Else
                             coberturaTarjetaWelcomeActiva = False
                             ocultarPantalla()
                         End If
 
-                        Trace("ReadCard desde welcome cargado; esperando PIN")
+                        Trace("ReadCard desde welcome cargado; esperando estado 150 con respaldo de 5s")
                     End If
 
                     If e.Url.ToString().ToLower().Contains("menumore") Then
