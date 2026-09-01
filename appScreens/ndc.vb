@@ -12,8 +12,8 @@ Public Class MensajeNDC
     Public Property Referencia As String
     Public Property Pantalla As String
     Public Property Layout As String
-    ' Solo para logging: conserva todos los comandos H/P recibidos sin cambiar
-    ' las propiedades Pantalla/Layout que usa la logica actual.
+    ' Solo para logging: conserva todos los comandos H/P
+    ' las propiedades Pantalla/Layout
     Public Property TodasLasPantallas As List(Of String)
     Public Property TodosLosLayouts As List(Of String)
     Public Property DatoB As String
@@ -165,8 +165,6 @@ Public Class MensajeNDC
             ndc.codigoRespuesta = respuestaMatch.Groups(1).Value
         End If
 
-        ' Se acepta ERROR y ERRORR porque ambos formatos existen en mensajes
-        ' historicos del host.
         Dim errorMatch As Match = Regex.Match(
             mensaje,
             "\bCODIGO\s+DE\s+ERRORR?\s*:?\s*(\d{3})\b",

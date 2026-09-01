@@ -1,5 +1,6 @@
 ﻿Imports System.IO
 Imports System.Net.Mime.MediaTypeNames
+Imports System.Runtime.InteropServices
 Imports System.Security.Permissions
 Imports System.Text.RegularExpressions
 Imports System.Threading.Tasks
@@ -82,6 +83,7 @@ Public Class Form1
     Dim timerOcultarWaitRegreso As Timer = Nothing
     Dim timerOcultarWaitTimeout As Timer = Nothing
     Dim timerOcultarReadCardWelcome As Timer = Nothing
+    Dim timerDecisionSalidaWelcome As Timer = Nothing
     Dim timerOcultarTimeoutInicial As Timer = Nothing
     Dim timerMenuAdvertenciaHardware As Timer = Nothing
     Dim toqueRegresoNativoDetectado As Boolean = False
@@ -97,6 +99,15 @@ Public Class Form1
     Dim menuAdvertenciaHardwareUrl As String = ""
     Dim transicionMenuNdcPendiente As Boolean = False
     Dim transicionRetiroFastCashPendiente As Boolean = False
+    Dim transicionMenuNdcVigenteHasta As DateTime = DateTime.MinValue
+    Dim advertencia157PrestamoActiva As Boolean = False
+    Dim advertencia157PrestamoUrl As String = ""
+    Dim advertencia157PrestamoPage As String = ""
+    Dim advertencia157ToqueWaitMostrado As Boolean = False
+    Dim impresionPrestamoDigitalPendiente As Boolean = False
+    Dim impresionPrestamoDigitalUrl As String = ""
+    Dim impresionPrestamoDigitalPage As String = ""
+    Dim impresionMenuPendiente As Boolean = False
     Dim timer701TransicionMenu As Timer = Nothing
     Dim navegacionFastCashCubierta As Boolean = False
     Dim timeoutCount As Integer = 0
@@ -125,9 +136,12 @@ Public Class Form1
     Dim timeoutOcultamientoPendiente As Boolean = False
     Dim timeoutWaitMostradoPorToque As Boolean = False
     Dim coberturaTarjetaWelcomeActiva As Boolean = False
+    Dim salidaWelcomePendiente As Boolean = False
+    Dim salidaWelcomePendienteHasta As DateTime = DateTime.MinValue
     Dim readCardWelcomeUrl As String = ""
     Dim pantallaAccionActual As String = ""
     Dim pantallaMenuActivo As String = ""
+    Private Const SupervisorOutServiceUrl As String = "C:\appMain\html\pages\out_of_service.html"
 
     ' >>> BANDERAS DE SINCRONIZACIÓN Y PROTECCIÓN <<<
     Dim baseScreenIsOnException As Boolean = False
@@ -137,7 +151,7 @@ Public Class Form1
     Dim urlHostReferenciaProtegida As String = ""
     Dim proteccionHostReferenciaHasta As DateTime = DateTime.MinValue
 
-    ' ============== Win32 API para región transparente ==============
+    'Win32 para región transparente (lo uso en transferencia entre cuentas)
     Private Declare Function CreateRectRgn Lib "gdi32" (ByVal X1 As Integer, ByVal Y1 As Integer, ByVal X2 As Integer, ByVal Y2 As Integer) As IntPtr
     Private Declare Function CombineRgn Lib "gdi32" (ByVal hDestRgn As IntPtr, ByVal hSrcRgn1 As IntPtr, ByVal hSrcRgn2 As IntPtr, ByVal nCombineMode As Integer) As Integer
     Private Declare Function SetWindowRgn Lib "user32" (ByVal hWnd As IntPtr, ByVal hRgn As IntPtr, ByVal bRedraw As Boolean) As Integer
@@ -186,7 +200,9 @@ Public Class Form1
 
     ' Variables para almacenar la configuración del INI justo antes de navegar
     Dim currentHoleRequired As Boolean = False
+    Dim currentHoleX As Integer = 0
     Dim currentHoleY As Integer = 0
+    Dim currentHoleWidth As Integer = 1024
     Dim currentHoleHeight As Integer = 0
 
     Private Sub frmsstWait_Load(sender As Object, e As EventArgs) Handles MyBase.Load
@@ -305,6 +321,24 @@ Public Class Form1
 
     Private Function ProcesarToqueGlobal(nCode As Integer, wParam As IntPtr, lParam As IntPtr) As IntPtr
         Try
+            If nCode >= 0 AndAlso wParam.ToInt32() = WM_LBUTTONUP AndAlso
+               advertencia157PrestamoActiva AndAlso Not advertencia157ToqueWaitMostrado Then
+
+                Dim datos157 As MouseHookData = DirectCast(
+                    System.Runtime.InteropServices.Marshal.PtrToStructure(lParam, GetType(MouseHookData)),
+                    MouseHookData)
+
+                advertencia157ToqueWaitMostrado = True
+                Trace("Click completado durante advertencia 157: x=" & datos157.Point.X & " y=" & datos157.Point.Y &
+                      "; mostrando wait para regreso a prestamo digital")
+
+                If Me.InvokeRequired Then
+                    Me.BeginInvoke(New MethodInvoker(AddressOf MostrarWaitPrestamo157DesdeToque))
+                Else
+                    MostrarWaitPrestamo157DesdeToque()
+                End If
+            End If
+
             If nCode >= 0 AndAlso wParam.ToInt32() = WM_LBUTTONUP AndAlso
                regresoNativo024Activo AndAlso Not toqueRegresoNativoDetectado Then
 
@@ -433,6 +467,22 @@ Public Class Form1
         End Try
     End Function
 
+    Private Function NavegarHtmlAppScreensSeguro(sUrl As String, origen As String) As Boolean
+        Try
+            If Not EsUrlHtmlAppScreens(sUrl) Then
+                Trace("Navegacion HTML: origen=" & origen & " destino=" & If(sUrl, "") & " no es una pagina HTML")
+                Return False
+            End If
+
+            CubrirTransicionHtml(sUrl)
+            WebBrowser1.Navigate(sUrl)
+            Return True
+        Catch ex As Exception
+            Trace("Error navegando HTML seguro (" & origen & "): " & ex.Message, 2)
+            Return False
+        End Try
+    End Function
+
     Private Sub LimpiarPantallaNativaDetectada()
         ultimoEstadoNativoDetectado = ""
         ultimoDetalleNativoDetectado = ""
@@ -455,6 +505,7 @@ Public Class Form1
     Private Sub CubrirTransicionHtml(sUrlDestino As String)
         Try
             If String.IsNullOrWhiteSpace(sUrlDestino) Then Exit Sub
+            If Not EsUrlHtmlAppScreens(sUrlDestino) Then Exit Sub
             MarcarHtmlAppScreensActivo(sUrlDestino)
             If EsUrlWaitTransicion(sUrlDestino) Then Exit Sub
             If WebBrowserTienePaginaCargada(sUrlDestino) Then Exit Sub
@@ -501,6 +552,10 @@ Public Class Form1
             timerOcultarReadCardWelcome = New Timer()
             timerOcultarReadCardWelcome.Interval = 5000
             AddHandler timerOcultarReadCardWelcome.Tick, AddressOf TimerOcultarReadCardWelcome_Tick
+
+            timerDecisionSalidaWelcome = New Timer()
+            timerDecisionSalidaWelcome.Interval = 50
+            AddHandler timerDecisionSalidaWelcome.Tick, AddressOf TimerDecisionSalidaWelcome_Tick
 
             timerOcultarTimeoutInicial = New Timer()
             timerOcultarTimeoutInicial.Interval = 1000
@@ -699,6 +754,42 @@ Public Class Form1
         End Try
     End Sub
 
+    Private Sub TimerDecisionSalidaWelcome_Tick(sender As Object, e As EventArgs)
+        Try
+            If Not salidaWelcomePendiente Then
+                If timerDecisionSalidaWelcome IsNot Nothing Then timerDecisionSalidaWelcome.Stop()
+                Exit Sub
+            End If
+
+            If HaySolicitudSupervisorPendiente() Then
+                FinalizarDecisionSalidaWelcome("supervisor")
+                CubrirSupervisorDesdeWelcome()
+                Exit Sub
+            End If
+
+            Dim estadoPantalla As String = ReadIni("SCREENS", "NUM", ConfigManager.WorkFile).Trim()
+            If estadoPantalla = "150" Then
+                writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
+                OcultarPorTarjetaDetectadaDuranteDecision()
+                Exit Sub
+            End If
+
+            If DateTime.Now >= salidaWelcomePendienteHasta Then
+                FinalizarDecisionSalidaWelcome("timeout")
+
+                If CubrirInsercionTarjetaDesdeWelcome(True) Then
+                    Trace("Decision salida welcome: sin supervisor/150; se muestra readCard.html")
+                Else
+                    Trace("Decision salida welcome: sin cobertura; se oculta appScreens")
+                    ocultarPantalla()
+                End If
+            End If
+        Catch ex As Exception
+            Trace("Error en decision salida welcome: " & ex.Message, 2)
+            FinalizarDecisionSalidaWelcome("error")
+        End Try
+    End Sub
+
     Private Sub WebBrowserWaitRegreso_DocumentCompleted(sender As Object, e As WebBrowserDocumentCompletedEventArgs)
         Try
             If webBrowserWaitRegreso IsNot Nothing AndAlso webBrowserWaitRegreso.Url IsNot Nothing AndAlso
@@ -738,13 +829,50 @@ Public Class Form1
 
     Private Sub IniciarTransicionMenuNdc()
         transicionMenuNdcPendiente = True
+        transicionMenuNdcVigenteHasta = DateTime.Now.AddMilliseconds(ObtenerEsperaTransicionMenuNdcMs())
 
         If timer701TransicionMenu IsNot Nothing Then
             timer701TransicionMenu.Stop()
         End If
 
-        Trace("Transicion menu/NDC iniciada; los 701 prematuros se diferiran")
+        Trace("Transicion menu/NDC iniciada; los 701 prematuros se diferiran por " &
+              ObtenerTiempoRestanteTransicionMenuNdcMs().ToString() & " ms")
     End Sub
+
+    Private Function ObtenerEsperaTransicionMenuNdcMs() As Integer
+        Dim valorDefault As Integer = If(transicionRetiroFastCashPendiente, 8000, 4000)
+
+        Try
+            Dim llave As String = If(transicionRetiroFastCashPendiente,
+                                     "FASTCASH_NDC_GRACE_MS",
+                                     "MENU_NDC_GRACE_MS")
+            Dim valorIni As String = ReadIni("PARAM", llave, ConfigManager.ScreensFile).Trim()
+            Dim valorConfigurado As Integer = valorDefault
+
+            If valorIni <> "" AndAlso Integer.TryParse(valorIni, valorConfigurado) Then
+                If valorConfigurado < 250 Then valorConfigurado = 250
+                If valorConfigurado > 15000 Then valorConfigurado = 15000
+                Return valorConfigurado
+            End If
+        Catch ex As Exception
+            Trace("No se pudo leer espera transicion menu/NDC: " & ex.Message, 1)
+        End Try
+
+        Return valorDefault
+    End Function
+
+    Private Function ObtenerTiempoRestanteTransicionMenuNdcMs() As Integer
+        Dim restante As Integer = CInt(Math.Ceiling((transicionMenuNdcVigenteHasta - DateTime.Now).TotalMilliseconds))
+        If restante < 1 Then restante = 1
+        Return restante
+    End Function
+
+    Private Function DebeDiferir701TransicionMenuNdc() As Boolean
+        If transicionMenuNdcPendiente Then Return True
+        If transicionMenuNdcVigenteHasta = DateTime.MinValue Then Return False
+
+        Return DateTime.Now < transicionMenuNdcVigenteHasta
+    End Function
 
     Private Sub Posponer701TransicionMenu()
         If timer701TransicionMenu Is Nothing Then
@@ -752,13 +880,18 @@ Public Class Form1
             AddHandler timer701TransicionMenu.Tick, AddressOf Timer701TransicionMenu_Tick
         End If
 
-        timer701TransicionMenu.Interval = If(transicionRetiroFastCashPendiente, 8000, 500)
+        Dim esperaRestante As Integer = ObtenerTiempoRestanteTransicionMenuNdcMs()
 
-        If Not timer701TransicionMenu.Enabled Then
-            timer701TransicionMenu.Start()
+        transicionMenuNdcPendiente = True
+        timer701TransicionMenu.Stop()
+        timer701TransicionMenu.Interval = esperaRestante
+        timer701TransicionMenu.Start()
+
+        If Not waitRegresoActivo AndAlso Not EsMenuHtmlActual() Then
+            MostrarWaitRegreso()
         End If
 
-        Trace("701 diferido " & timer701TransicionMenu.Interval &
+        Trace("701 diferido " & timer701TransicionMenu.Interval.ToString() &
               " ms mientras se espera la pantalla NDC final")
     End Sub
 
@@ -778,10 +911,14 @@ Public Class Form1
     Private Sub Timer701TransicionMenu_Tick(sender As Object, e As EventArgs)
         timer701TransicionMenu.Stop()
 
-        If Not transicionMenuNdcPendiente Then Exit Sub
+        If DateTime.Now < transicionMenuNdcVigenteHasta Then
+            Posponer701TransicionMenu()
+            Exit Sub
+        End If
 
         transicionMenuNdcPendiente = False
         transicionRetiroFastCashPendiente = False
+        transicionMenuNdcVigenteHasta = DateTime.MinValue
         Trace("No llego una pantalla NDC durante la espera; procesando 701 diferido")
         ProcesarPantalla("701")
     End Sub
@@ -901,6 +1038,98 @@ Public Class Form1
                u.EndsWith("/montos_rst.html")
     End Function
 
+    Private Function EsUrlPd659(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.EndsWith("\pd-659.html") OrElse
+               u.EndsWith("/pd-659.html")
+    End Function
+
+    Private Function EsUrlPrestamoDigital(url As String) As Boolean
+        Dim u As String = If(url, "").Trim().ToLower()
+        Return u.Contains("\pd-") OrElse
+               u.Contains("/pd-") OrElse
+               u.Contains("\disposicioncredito-") OrElse
+               u.Contains("/disposicioncredito-") OrElse
+               u.Contains("\prestamodigital") OrElse
+               u.Contains("/prestamodigital")
+    End Function
+
+    Private Sub ActivarAdvertencia157Prestamo()
+        If advertencia157PrestamoActiva Then
+            Trace("157 repetido sobre prestamo digital; se mantiene espera nativa activa")
+            ocultarPantalla()
+            Exit Sub
+        End If
+
+        advertencia157PrestamoActiva = True
+        advertencia157PrestamoUrl = currentScreen
+        advertencia157PrestamoPage = pantallaAccionActual
+        advertencia157ToqueWaitMostrado = False
+        PrepararWaitRegreso()
+        Timer1.Interval = 30
+
+        Trace("157 recibido sobre prestamo digital: se oculta appScreens para mostrar advertencia nativa. pantallaPendiente=" &
+              advertencia157PrestamoUrl)
+        ocultarPantalla()
+    End Sub
+
+    Private Function RestaurarPrestamoTrasAdvertencia157() As Boolean
+        If Not advertencia157PrestamoActiva Then Return False
+
+        Dim urlPendiente As String = advertencia157PrestamoUrl
+        Dim pagePendiente As String = advertencia157PrestamoPage
+        LimpiarAdvertencia157Prestamo("701")
+
+        If String.IsNullOrWhiteSpace(urlPendiente) Then
+            Trace("701 despues de 157 sin pantalla pendiente; se permite flujo normal")
+            Return False
+        End If
+
+        currentScreen = urlPendiente
+        If pagePendiente <> "" Then pantallaAccionActual = pagePendiente
+        bNDCPageActive = True
+        MarcarHtmlAppScreensActivo(urlPendiente)
+
+        Trace("701 despues de advertencia 157: se restaura pantalla de prestamo digital=" & urlPendiente)
+
+        If WebBrowserTienePaginaCargada(urlPendiente) Then
+            If MostrarWaitRegreso() Then
+                ProgramarOcultarWaitRegreso()
+            Else
+                Me.Show()
+                Me.BringToFront()
+            End If
+        Else
+            MostrarWaitRegreso()
+            WebBrowser1.Navigate(urlPendiente)
+            Me.Show()
+            Me.BringToFront()
+        End If
+
+        Return True
+    End Function
+
+    Private Sub MostrarWaitPrestamo157DesdeToque()
+        If Not advertencia157PrestamoActiva Then Exit Sub
+        If waitRegresoActivo Then Exit Sub
+
+        If MostrarWaitRegreso() Then
+            Trace("Toque detectado durante advertencia 157; wait mostrado antes del regreso a prestamo digital")
+        End If
+    End Sub
+
+    Private Sub LimpiarAdvertencia157Prestamo(motivo As String)
+        If advertencia157PrestamoActiva Then
+            Trace("Limpiando espera de advertencia 157 prestamo digital por " & motivo)
+        End If
+
+        advertencia157PrestamoActiva = False
+        advertencia157PrestamoUrl = ""
+        advertencia157PrestamoPage = ""
+        advertencia157ToqueWaitMostrado = False
+        Timer1.Interval = 300
+    End Sub
+
     Private Function EsUrlWelcome(url As String) As Boolean
         Dim u As String = If(url, "").Trim().ToLower()
         Return u.EndsWith("\welcome.html") OrElse
@@ -929,6 +1158,84 @@ Public Class Form1
                contenido.Contains("DISPONIBLE:") OrElse
                contenido.Contains(Chr(29) & "2")
     End Function
+
+    Private Function EsImpresionTicketPrestamoDigital(contenido As String, sUrl As String, sPage As String) As Boolean
+        Dim texto As String = NormalizarTextoHost(contenido)
+        Dim url As String = If(sUrl, "").Trim().ToLower()
+        Dim page As String = If(sPage, "").Trim()
+
+        Return EsMensajeConTicket(contenido) AndAlso
+               (texto.Contains("IMPRESION TICKET PRESTAMO") OrElse
+                page = "6470" OrElse
+                url.EndsWith("\disposicioncredito-647.html") OrElse
+                url.EndsWith("/disposicioncredito-647.html"))
+    End Function
+
+    Private Sub ActivarImpresionPrestamoDigitalPendiente(sUrl As String, sPage As String)
+        impresionPrestamoDigitalPendiente = True
+        impresionPrestamoDigitalUrl = sUrl
+        impresionPrestamoDigitalPage = sPage
+        Trace("Impresion prestamo digital pendiente; wait visible hasta 701. urlPendiente=" & sUrl)
+    End Sub
+
+    Private Sub LimpiarImpresionPrestamoDigitalPendiente(motivo As String)
+        If impresionPrestamoDigitalPendiente Then
+            Trace("Limpiando impresion prestamo digital pendiente por " & motivo)
+        End If
+
+        impresionPrestamoDigitalPendiente = False
+        impresionPrestamoDigitalUrl = ""
+        impresionPrestamoDigitalPage = ""
+    End Sub
+
+    Private Function LiberarImpresionPrestamoDigitalPendiente() As Boolean
+        If Not impresionPrestamoDigitalPendiente Then Return False
+
+        Dim sUrl As String = impresionPrestamoDigitalUrl
+        Dim sPage As String = impresionPrestamoDigitalPage
+        LimpiarImpresionPrestamoDigitalPendiente("701")
+
+        If String.IsNullOrWhiteSpace(sUrl) Then
+            Trace("Impresion prestamo digital sin URL pendiente; se permite 701 normal", 1)
+            Return False
+        End If
+
+        currentScreen = sUrl
+        If sPage <> "" Then pantallaAccionActual = sPage
+        MarcarHtmlAppScreensActivo(sUrl)
+        bNDCPageActive = True
+        isExpetionClosePageNDC = False
+
+        Trace("701 libera impresion prestamo digital; regresando a pantalla=" & sUrl)
+        CubrirTransicionHtml(sUrl)
+        WebBrowser1.Navigate(sUrl)
+        Me.Show()
+        Me.BringToFront()
+
+        Return True
+    End Function
+
+    Private Sub LimpiarImpresionMenuPendiente(motivo As String)
+        If impresionMenuPendiente Then
+            Trace("Limpiando impresion de menu pendiente por " & motivo)
+        End If
+
+        impresionMenuPendiente = False
+    End Sub
+
+    Private Sub Permitir701ImpresionMenuPendiente()
+        If Not impresionMenuPendiente Then Exit Sub
+
+        impresionMenuPendiente = False
+        transicionMenuNdcPendiente = False
+        transicionMenuNdcVigenteHasta = DateTime.MinValue
+
+        If timer701TransicionMenu IsNot Nothing Then
+            timer701TransicionMenu.Stop()
+        End If
+
+        Trace("701 de impresion de menu pendiente; se procesa normal para regresar a menu activo=" & sMenuActivo)
+    End Sub
 
     Private Sub ActivarProteccionMontosRST()
         proteccionMontosRSTHasta = DateTime.Now.AddSeconds(4)
@@ -1024,13 +1331,17 @@ Public Class Form1
             If reqTransparent = "TRUE" Then
                 currentHoleRequired = True
 
+                Dim iniHoleX As String = ReadIni(screenId, "HOLEX", ConfigManager.ScreensFile).Trim()
                 Dim iniHoleY As String = ReadIni(screenId, "HOLEY", ConfigManager.ScreensFile).Trim()
+                Dim iniHoleWidth As String = ReadIni(screenId, "HOLEWIDTH", ConfigManager.ScreensFile).Trim()
                 Dim iniHoleHeight As String = ReadIni(screenId, "HOLEHEIGHT", ConfigManager.ScreensFile).Trim()
 
+                If Not Integer.TryParse(iniHoleX, currentHoleX) Then currentHoleX = 0
                 If Not Integer.TryParse(iniHoleY, currentHoleY) Then currentHoleY = 430
+                If Not Integer.TryParse(iniHoleWidth, currentHoleWidth) Then currentHoleWidth = 1024
                 If Not Integer.TryParse(iniHoleHeight, currentHoleHeight) Then currentHoleHeight = 60
 
-                Trace("Hole Config Guardada para " & screenId & ": Y=" & currentHoleY & " H=" & currentHoleHeight)
+                Trace("Hole Config Guardada para " & screenId & ": X=" & currentHoleX & " Y=" & currentHoleY & " W=" & currentHoleWidth & " H=" & currentHoleHeight)
             Else
                 currentHoleRequired = False
             End If
@@ -1384,7 +1695,7 @@ Public Class Form1
                 Trace("SCREENS.NUM recibido: hide")
 
                 If CubrirInsercionTarjetaDesdeWelcome() Then
-                    Trace("Hide desde welcome cubierto inmediatamente con readCard.html")
+                    Trace("Hide desde welcome atendido por decision de salida")
                     writeINI("SCREENS", "NUM", "", ConfigManager.WorkFile)
                     sValue = ""
                 End If
@@ -1438,6 +1749,23 @@ Public Class Form1
                         CancelarCoberturaTarjetaWelcome("Timer1 " & sValue)
                     End If
 
+                    If (sValue = "500" OrElse sValue = "welcome" OrElse sValue = "200" OrElse sValue = "hide") AndAlso
+                       advertencia157PrestamoActiva Then
+                        LimpiarAdvertencia157Prestamo("estado " & sValue)
+                    ElseIf sValue = "513" AndAlso advertencia157PrestamoActiva Then
+                        LimpiarAdvertencia157Prestamo("513")
+                    End If
+
+                    If (sValue = "500" OrElse sValue = "welcome" OrElse sValue = "200" OrElse sValue = "hide" OrElse sValue = "513") AndAlso
+                       impresionPrestamoDigitalPendiente Then
+                        LimpiarImpresionPrestamoDigitalPendiente("estado " & sValue)
+                    End If
+
+                    If (sValue = "500" OrElse sValue = "welcome" OrElse sValue = "200" OrElse sValue = "hide" OrElse sValue = "513") AndAlso
+                       impresionMenuPendiente Then
+                        LimpiarImpresionMenuPendiente("estado " & sValue)
+                    End If
+
                     If (sValue = "300" OrElse sValue = "701") AndAlso
                        ProteccionMontosRSTActiva() Then
                         RetirarCoberturaMontosRST("estado " & sValue)
@@ -1463,6 +1791,12 @@ Public Class Form1
                         allowScreen = False
                     ElseIf sValue <> "701" Then
                         tiempoBloqueo701 = DateTime.MinValue
+                    End If
+
+                    If sValue = "701" AndAlso advertencia157PrestamoActiva AndAlso allowScreen Then
+                        If RestaurarPrestamoTrasAdvertencia157() Then
+                            allowScreen = False
+                        End If
                     End If
 
                     If sValue = "701" AndAlso bNDCPageActive AndAlso allowScreen Then
@@ -1492,6 +1826,24 @@ Public Class Form1
                         End If
                     End If
 
+                    If sValue = "157" AndAlso
+                       bNDCPageActive AndAlso
+                       EsUrlPrestamoDigital(currentScreen) AndAlso
+                       allowScreen Then
+
+                        ActivarAdvertencia157Prestamo()
+                        allowScreen = False
+                    End If
+
+                    If sValue = "513" AndAlso
+                       bNDCPageActive AndAlso
+                       EsUrlPd659(currentScreen) AndAlso
+                       allowScreen Then
+
+                        Trace("513 ignorado: PD-659 ya esta visible; no se navega a thanks")
+                        allowScreen = False
+                    End If
+
                     If allowScreen Then
                         ProcesarPantalla(sValue)
                     End If
@@ -1510,6 +1862,10 @@ Public Class Form1
 
                     Trace("SCREENS.DATA recibido: " + sData)
                     Trace("SCREENS.DATA currentScreen: " + currentScreen)
+
+                    If sData = "KEYPIN" AndAlso advertencia157PrestamoActiva Then
+                        MostrarWaitPrestamo157DesdeToque()
+                    End If
 
                     Select Case sData
                         Case "KEYPIN"
@@ -1674,9 +2030,8 @@ Public Class Form1
                status <> "DISPENSING"
     End Function
 
-    ' ===== Logging de acciones de usuario (pantallas/FDK) =====
+    ' Logging de acciones de usuario (pantallas/FDK)
     ' Activable con [TRACE] USER_ACTIONS=TRUE en appConfig.ini.
-    ' Escribe a yyyyMMdd_appScreens_acciones.log y nunca participa en decisiones NDC.
     Private Sub TraceAccionUsuario(strTexto As String, Optional level As Integer = 0)
         Try
             Dim sFlag As String = ReadIni("TRACE", "USER_ACTIONS", ConfigManager.ConfigFile)
@@ -2016,13 +2371,16 @@ Public Class Form1
                     Trace("EXP: wait no disponible para regreso a menu", 1)
                 End If
 
-                currentScreen = urlRetornoExcepcion
-                If urlRetornoExcepcion = sMenuActivo AndAlso pantallaMenuActivo <> "" Then
-                    pantallaAccionActual = pantallaMenuActivo
+                If NavegarHtmlAppScreensSeguro(urlRetornoExcepcion, "excepcion FDK") Then
+                    currentScreen = urlRetornoExcepcion
+                    If urlRetornoExcepcion = sMenuActivo AndAlso pantallaMenuActivo <> "" Then
+                        pantallaAccionActual = pantallaMenuActivo
+                    End If
+                    Me.Show()
+                Else
+                    Trace("Excepcion FDK sin HTML valido de retorno; appScreens permanece oculto")
+                    Me.Hide()
                 End If
-                CubrirTransicionHtml(urlRetornoExcepcion)
-                WebBrowser1.Navigate(urlRetornoExcepcion)
-                Me.Show()
             Else
                 Trace("Excepcion FDK sin pagina de retorno; appScreens permanece oculto")
             End If
@@ -2030,9 +2388,12 @@ Public Class Form1
         ElseIf esBack AndAlso Not esRegresoMenuMore Then
             fdkBack = ""
             Trace("Ejectua back FDK.. navega a lastScreen: " + lastUrl)
-            CubrirTransicionHtml(lastUrl)
-            WebBrowser1.Navigate(lastUrl)
-            Me.Show()
+            If NavegarHtmlAppScreensSeguro(lastUrl, "back FDK") Then
+                Me.Show()
+            Else
+                Trace("Back FDK sin HTML valido; appScreens permanece oculto")
+                Me.Hide()
+            End If
         Else
             Me.Hide()
             Threading.Thread.Sleep(300)
@@ -2070,10 +2431,8 @@ Public Class Form1
         ProcesarPantalla("300")
     End Sub
 
-    ''' <summary>
-    ''' Boton "Si" de exp-852-fic.html: es un click LOCAL, no se manda nada al host/switch.
+    ''' Boton "Si" de exp-852-fic.html: es un click LOCAL, no se manda nada al host
     ''' Solo destapa el menu real que ya estaba listo antes de mostrar la advertencia ficticia.
-    ''' </summary>
     Public Sub clickPageFicticia()
         Try
             Dim sUrlPendiente As String = menuPendienteTrasAdvertenciaFicticia
@@ -2165,9 +2524,11 @@ Public Class Form1
     Public Sub setBack()
         Try
             Trace("Boton regresar configurado")
-            CubrirTransicionHtml(currentScreen)
-            WebBrowser1.Navigate(currentScreen)
-            Me.Show()
+            If NavegarHtmlAppScreensSeguro(currentScreen, "setBack") Then
+                Me.Show()
+            Else
+                Me.Hide()
+            End If
         Catch ex As Exception
             Trace("Error setBack: " + ex.Message)
         End Try
@@ -2186,6 +2547,11 @@ Public Class Form1
             sSuper = ReadIni("NDC", "SUPER", ConfigManager.strRutaInterface)
 
             If sDato = "1" Or sSuper = SupervisorRole Then
+                If salidaWelcomePendiente Then
+                    Trace("Supervisor detectado durante decision salida welcome; se espera out_of_service antes de abrir configuracion")
+                    Exit Sub
+                End If
+
                 Trace("Intento de configuracion: dato=" + sDato)
                 Trace("Intento de configuracion: supervisor=" + sSuper)
 
@@ -2545,8 +2911,8 @@ Public Class Form1
                 Dim fallbackUrl As String = ReadIni(ndc.CodigoTransaccion, "PAGE", ConfigManager.ScreensFile)
 
                 If ndc.CodigoTransaccion = "055" AndAlso Not esRetiroSinTarjeta Then
-                    fallbackUrl = "" ' Anulamos la ruta del INI
-                    isHostError = True ' Engañamos al 513 para que oculte y NO muestre thanks
+                    fallbackUrl = "" ' 
+                    isHostError = True '
                     Me.Hide()
                     Trace("Se detectó 055 pero es flujo CON tarjeta física. Ocultando appScreens.")
                 End If
@@ -2623,6 +2989,8 @@ Public Class Form1
             Dim esTicketImpresion As Boolean = EsMensajeConTicket(contenido)
 
             Dim esImpresionPrematura As Boolean = esPaginaMenu AndAlso esTicketImpresion
+            Dim esImpresionPrestamoDigital As Boolean =
+                EsImpresionTicketPrestamoDigital(contenido, sUrl, sPage)
 
             If esFastCash Then
                 If waitRegresoActivo Then
@@ -2633,7 +3001,7 @@ Public Class Form1
             End If
 
             ' Si es una impresión prematura, NO mostramos la pantalla aún
-            If Not isExpetionClosePageNDC AndAlso Not esImpresionPrematura Then
+            If Not isExpetionClosePageNDC AndAlso Not esImpresionPrematura AndAlso Not esImpresionPrestamoDigital Then
                 If Not esFastCash OrElse Not navegacionFastCashCubierta Then
                     Me.Show()
                 End If
@@ -2736,6 +3104,7 @@ Public Class Form1
                 sLastMenuUrl = sUrl
                 pantallaMenuActivo = sPage
                 pantallaAccionActual = sPage
+                impresionMenuPendiente = True
                 Trace("Menu activo actualizado por impresion: " & sMenuActivo)
 
                 Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile)
@@ -2747,6 +3116,20 @@ Public Class Form1
                 Else
                     Trace("No se encontro PAGE para estado 300; se oculta appScreens como respaldo")
                     Me.Hide()
+                End If
+
+                bNDCPageActive = False
+            ElseIf esImpresionPrestamoDigital Then
+                ActivarImpresionPrestamoDigitalPendiente(sUrl, sPage)
+
+                Dim sWaitUrl As String = ReadIni("300", "PAGE", ConfigManager.ScreensFile)
+
+                If sWaitUrl <> "" Then
+                    currentScreen = sWaitUrl
+                    WebBrowser1.Navigate(sWaitUrl)
+                    Me.Show()
+                Else
+                    MostrarWaitRegreso()
                 End If
 
                 bNDCPageActive = False
@@ -2764,6 +3147,7 @@ Public Class Form1
                 End If
 
                 If esPaginaMenu AndAlso Not bAdvertenciaFicticiaMostrada AndAlso
+                   Not IsPrinterError() AndAlso
                    (AreAnyCassettesEmpty() OrElse IsCdmError()) AndAlso
                    ReadIni("852FIC", "PAGE", ConfigManager.ScreensFile).Trim() <> "" Then
 
@@ -2865,6 +3249,14 @@ Public Class Form1
             Trace("[ProcesarPantalla-log] Error: " & ex.Message)
         End Try
 
+        If sValue = "701" AndAlso LiberarImpresionPrestamoDigitalPendiente() Then
+            Exit Sub
+        End If
+
+        If sValue = "701" Then
+            Permitir701ImpresionMenuPendiente()
+        End If
+
         If sValue = "300" Then
             If ProteccionMontosRSTActiva() Then
                 RetirarCoberturaMontosRST("300 residual")
@@ -2883,11 +3275,12 @@ Public Class Form1
             End If
 
             MostrarWaitRegreso()
-        ElseIf sValue = "701" AndAlso transicionMenuNdcPendiente Then
+        ElseIf sValue = "701" AndAlso DebeDiferir701TransicionMenuNdc() Then
             Posponer701TransicionMenu()
             Exit Sub
         ElseIf sValue = "500" OrElse sValue = "welcome" OrElse
                sValue = "513" OrElse sValue = "hide" Then
+            transicionMenuNdcVigenteHasta = DateTime.MinValue
             CompletarTransicionMenuNdc()
         End If
 
@@ -3000,7 +3393,7 @@ Public Class Form1
             MostrarWaitRegreso()
 
             advertenciaHardwareActiva = True
-            ' El switch ya mando su propia advertencia real (850/851/852);
+            ' switch ya mando su propia advertencia real (850/851/852);
             ' no hace falta que ademas se muestre la version ficticia local.
             bAdvertenciaFicticiaMostrada = True
 
@@ -3023,7 +3416,7 @@ Public Class Form1
             sValue = "hide"
         End If
 
-        ' >>> FIX: Cuando sale la pantalla de excepción (nativa) por segunda o más veces,
+        ' Cuando sale la pantalla de excepción (nativa) por segunda o más veces,
         ' encendemos la bandera para obligar a que el clic del usuario se envíe al flujo nativo.
         If sValue = "850" OrElse sValue = "851" OrElse sValue = "852" Then
             baseScreenIsOnException = True
@@ -3328,7 +3721,7 @@ Public Class Form1
                 If timeoutVisualEsperandoBack AndAlso waitRegresoActivo Then
                     Trace("Timeout visual: retorno nativo cubierto con wait")
                 ElseIf CubrirInsercionTarjetaDesdeWelcome() Then
-                    Trace("Hide desde welcome cubierto con readCard.html")
+                    Trace("Hide desde welcome atendido por decision de salida")
                 Else
                     ocultarPantalla()
                 End If
@@ -3349,6 +3742,7 @@ Public Class Form1
 
     Private Sub ocultarPantalla()
         Trace("Ocultando appScreens")
+        FinalizarDecisionSalidaWelcome("ocultar")
         coberturaTarjetaWelcomeActiva = False
         If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
         CancelarOcultamientoTimeoutInicial()
@@ -3368,8 +3762,9 @@ Public Class Form1
         sCurrentData = ""
     End Sub
 
-    Private Function CubrirInsercionTarjetaDesdeWelcome() As Boolean
+    Private Function CubrirInsercionTarjetaDesdeWelcome(Optional omitirDecisionSalidaWelcome As Boolean = False) As Boolean
         Try
+            If salidaWelcomePendiente Then Return True
             If coberturaTarjetaWelcomeActiva Then Return False
             If HayRetiroSinTarjetaActivo() Then
                 Trace("ReadCard omitido: flujo de retiro sin tarjeta activo")
@@ -3386,6 +3781,14 @@ Public Class Form1
                 vieneDeWelcome = urlWelcome <> "" AndAlso WebBrowserTienePaginaCargada(urlWelcome)
             End If
             If Not vieneDeWelcome Then Return False
+
+            If HaySolicitudSupervisorPendiente() Then
+                Return CubrirSupervisorDesdeWelcome()
+            End If
+
+            If Not omitirDecisionSalidaWelcome Then
+                Return ProgramarDecisionSalidaWelcome()
+            End If
 
             LimpiarProteccionWelcomeHost()
 
@@ -3427,6 +3830,116 @@ Public Class Form1
         Catch ex As Exception
             Trace("Error cubriendo salida de welcome: " & ex.Message, 2)
             coberturaTarjetaWelcomeActiva = False
+            Return False
+        End Try
+    End Function
+
+    Private Function ObtenerEsperaDecisionSalidaWelcomeMs() As Integer
+        Dim valorDefault As Integer = 800
+
+        Try
+            Dim valorIni As String = ReadIni("PARAM", "WELCOME_HIDE_DECISION_MS", ConfigManager.ScreensFile).Trim()
+            Dim valorConfigurado As Integer = valorDefault
+
+            If valorIni <> "" AndAlso Integer.TryParse(valorIni, valorConfigurado) Then
+                If valorConfigurado < 100 Then valorConfigurado = 100
+                If valorConfigurado > 3000 Then valorConfigurado = 3000
+                Return valorConfigurado
+            End If
+        Catch ex As Exception
+            Trace("No se pudo leer espera salida welcome: " & ex.Message, 1)
+        End Try
+
+        Return valorDefault
+    End Function
+
+    Private Function ProgramarDecisionSalidaWelcome() As Boolean
+        Try
+            salidaWelcomePendiente = True
+            salidaWelcomePendienteHasta = DateTime.Now.AddMilliseconds(ObtenerEsperaDecisionSalidaWelcomeMs())
+
+            If timerDecisionSalidaWelcome IsNot Nothing Then
+                timerDecisionSalidaWelcome.Stop()
+                timerDecisionSalidaWelcome.Start()
+            End If
+
+            Me.Show()
+            Me.TopMost = True
+            Me.Activate()
+
+            Trace("Hide desde welcome retenido para decidir entre supervisor, tarjeta o readCard")
+            Return True
+        Catch ex As Exception
+            Trace("Error programando decision salida welcome: " & ex.Message, 2)
+            salidaWelcomePendiente = False
+            salidaWelcomePendienteHasta = DateTime.MinValue
+            Return False
+        End Try
+    End Function
+
+    Private Sub FinalizarDecisionSalidaWelcome(motivo As String)
+        If salidaWelcomePendiente Then
+            Trace("Decision salida welcome finalizada por " & motivo)
+        End If
+
+        salidaWelcomePendiente = False
+        salidaWelcomePendienteHasta = DateTime.MinValue
+        If timerDecisionSalidaWelcome IsNot Nothing Then timerDecisionSalidaWelcome.Stop()
+    End Sub
+
+    Private Sub OcultarPorTarjetaDetectadaDuranteDecision()
+        Try
+            tarjetaFisicaActiva = True
+            retiroSinTarjetaActivo = False
+            If RetiroSinTarjetaDesdeWelcomePendiente() Then
+                LimpiarRetiroSinTarjetaDesdeWelcome()
+            End If
+
+            Trace("Estado 150 recibido durante decision salida welcome; se omite readCard y se deja pantalla nativa")
+            RegistrarPantallaNativaDetectada("readCard_150", "150")
+            currentScreen = "pantalla_nativa_texto"
+            FinalizarDecisionSalidaWelcome("150")
+            ocultarPantalla()
+        Catch ex As Exception
+            Trace("Error ocultando por 150 durante decision salida welcome: " & ex.Message, 2)
+        End Try
+    End Sub
+
+    Private Function CubrirSupervisorDesdeWelcome() As Boolean
+        Try
+            LimpiarProteccionWelcomeHost()
+            DetenerTimeoutAppScreens(True)
+            RestoreFullRegion()
+
+            coberturaTarjetaWelcomeActiva = False
+            readCardWelcomeUrl = ""
+            If timerOcultarReadCardWelcome IsNot Nothing Then timerOcultarReadCardWelcome.Stop()
+
+            If webBrowserWaitRegreso IsNot Nothing Then
+                webBrowserWaitRegreso.Visible = False
+            End If
+            waitRegresoActivo = False
+
+            currentScreen = SupervisorOutServiceUrl
+            pantallaAccionActual = "OUT_OF_SERVICE"
+            sCurrent = ""
+            sCurrentData = ""
+
+            Me.Show()
+            Me.TopMost = True
+            Me.Activate()
+
+            If WebBrowser1 IsNot Nothing Then
+                WebBrowser1.Visible = True
+                WebBrowser1.BringToFront()
+                MarcarHtmlAppScreensActivo(SupervisorOutServiceUrl)
+                WebBrowser1.Navigate(SupervisorOutServiceUrl)
+            End If
+
+            Trace("Supervisor pendiente en salida de welcome; se muestra out_of_service.html en lugar de readCard.html")
+            Return True
+        Catch ex As Exception
+            Trace("Error cubriendo supervisor desde welcome: " & ex.Message, 2)
             Return False
         End Try
     End Function
@@ -3536,6 +4049,24 @@ Public Class Form1
         If serviceOutController Is Nothing Then Return False
 
         Return serviceOutController.RevisarEstado()
+    End Function
+
+    Private Function HaySolicitudSupervisorPendiente() As Boolean
+        Try
+            Dim sDato As String = ReadIni("NDC", "EVENT", ConfigManager.strRutaInterface)
+            Dim sEventSuper As String = ReadIni("NDC", "EVENT_SUPER", ConfigManager.strRutaInterface)
+            Dim sSuper As String = ReadIni("NDC", "SUPER", ConfigManager.strRutaInterface)
+            Dim sOperatorSwitch As String = ReadIni("SIU STATUS", "OPERATOR SWITCH", ConfigManager.workFileDevices).Trim().ToUpperInvariant()
+
+            Return sDato = "1" OrElse
+                   sEventSuper = "1" OrElse
+                   sEventSuper = SupervisorRole OrElse
+                   sSuper = SupervisorRole OrElse
+                   sOperatorSwitch = SupervisorRole
+        Catch ex As Exception
+            Trace("Error revisando solicitud supervisor pendiente: " & ex.Message, 2)
+            Return False
+        End Try
     End Function
 
     Private Function EsComandoRepetible(valor As String) As Boolean
@@ -3769,6 +4300,16 @@ Public Class Form1
                 Return
             End If
 
+            If Not EsUrlHtmlAppScreens(pantallaBack) Then
+                Trace("Back visual cancelado: destino no HTML=" & pantallaBack, 1)
+                timeoutSobrePantallaBase = False
+                timeoutVisualEsperandoBack = False
+                timeoutWaitMostradoPorToque = False
+                If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
+                Me.Hide()
+                Return
+            End If
+
             currentScreen = pantallaBack
             timeoutSobrePantallaBase = False
             timeoutVisualEsperandoBack = False
@@ -3813,8 +4354,7 @@ Public Class Form1
 
             If WebBrowser1 IsNot Nothing Then
                 WebBrowser1.Visible = UsarCoberturaSinOcultarPrincipal()
-                CubrirTransicionHtml(pantallaBack)
-                WebBrowser1.Navigate(pantallaBack)
+                NavegarHtmlAppScreensSeguro(pantallaBack, "back visual")
             End If
 
             Trace("Back visual: cargando HTML pendiente")
@@ -3883,7 +4423,7 @@ Public Class Form1
             Dim c3 As Boolean = TieneBilletes("3")
             Dim c4 As Boolean = TieneBilletes("4")
 
-            ' --- Log cada 60 min ---
+            'Log cada 60 min
             Dim imprimirLog As Boolean = False
             If DateTime.Now >= ultimoLogCassettes.AddMinutes(60) Then
                 imprimirLog = True
@@ -4010,7 +4550,7 @@ Public Class Form1
                     AplicarEstadoDispositivosEnHtml("carga_documento", True)
 
                     If currentHoleRequired Then
-                        ApplyTransparentRegion(currentHoleY, currentHoleHeight)
+                        ApplyTransparentRegion(currentHoleX, currentHoleY, currentHoleWidth, currentHoleHeight)
                     Else
                         RestoreFullRegion()
                     End If
@@ -4085,21 +4625,34 @@ Public Class Form1
         End Try
     End Sub
 
-    Private Sub ApplyTransparentRegion(holeY As Integer, holeHeight As Integer)
+    Private Sub ApplyTransparentRegion(holeX As Integer, holeY As Integer, holeWidth As Integer, holeHeight As Integer)
         Try
             If transparentRegionApplied Then
                 RestoreFullRegion()
             End If
 
             ' 1. Calculamos los factores de escala
+            Dim scaleX As Double = Me.Width / 1024.0
             Dim scaleY As Double = Me.Height / 768.0
 
             ' 2. Reescalamos las coordenadas del INI 
+            Dim realHoleX As Integer = CInt(holeX * scaleX)
             Dim realHoleY As Integer = CInt(holeY * scaleY)
+            Dim realHoleWidth As Integer = CInt(holeWidth * scaleX)
             Dim realHoleHeight As Integer = CInt(holeHeight * scaleY)
 
-            Dim realHoleX As Integer = 0
-            Dim realHoleWidth As Integer = Me.Width ' Cubre todo el ancho del nuevo monitor
+            If realHoleX < 0 Then realHoleX = 0
+            If realHoleY < 0 Then realHoleY = 0
+            If realHoleWidth <= 0 Then realHoleWidth = Me.Width
+            If realHoleHeight <= 0 Then realHoleHeight = 60
+
+            If realHoleX + realHoleWidth > Me.Width Then realHoleWidth = Me.Width - realHoleX
+            If realHoleY + realHoleHeight > Me.Height Then realHoleHeight = Me.Height - realHoleY
+
+            If realHoleWidth <= 0 OrElse realHoleHeight <= 0 Then
+                Trace($"[Transparent Region] Hueco invalido - X={holeX} Y={holeY} W={holeWidth} H={holeHeight}")
+                Return
+            End If
 
             Dim fullRegion As IntPtr = CreateRectRgn(0, 0, Me.Width, Me.Height)
             Dim holeRegion As IntPtr = CreateRectRgn(realHoleX, realHoleY, realHoleX + realHoleWidth, realHoleY + realHoleHeight)
@@ -4112,7 +4665,7 @@ Public Class Form1
             DeleteObject(holeRegion)
 
             transparentRegionApplied = True
-            Trace($"[Transparent Region] Aplicada Reescalada - Original Y={holeY} | Nuevo Y={realHoleY} Alto={realHoleHeight}")
+            Trace($"[Transparent Region] Aplicada Reescalada - Original X={holeX} Y={holeY} W={holeWidth} H={holeHeight} | Nuevo X={realHoleX} Y={realHoleY} W={realHoleWidth} H={realHoleHeight}")
 
         Catch ex As Exception
             Trace("[Transparent Region] Error aplicando región: " & ex.Message)
