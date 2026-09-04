@@ -85,6 +85,7 @@ Public Class Form1
     Dim timerOcultarReadCardWelcome As Timer = Nothing
     Dim timerDecisionSalidaWelcome As Timer = Nothing
     Dim timerOcultarTimeoutInicial As Timer = Nothing
+    Dim timerOcultarCancelacionComision As Timer = Nothing
     Dim timerMenuAdvertenciaHardware As Timer = Nothing
     Dim toqueRegresoNativoDetectado As Boolean = False
     Dim idCoberturaRender As Integer = 0
@@ -111,6 +112,9 @@ Public Class Form1
     Dim timer701TransicionMenu As Timer = Nothing
     Dim navegacionFastCashCubierta As Boolean = False
     Dim timeoutCount As Integer = 0
+    Dim cancelacionComisionPendiente As Boolean = False
+    Dim ocultamientoCancelacionComisionPendiente As Boolean = False
+    Dim fastCashProtegidoHasta As DateTime = DateTime.MinValue
 
     ' Variables para la lógica dinámica de FastCash y Denominaciones <<<
     Dim urlFastCashGlobal As String = ""
@@ -828,16 +832,65 @@ Public Class Form1
     End Function
 
     Private Sub IniciarTransicionMenuNdc()
+        IniciarTransicionMenuNdc(ObtenerEsperaTransicionMenuNdcMs(), "menu/NDC")
+    End Sub
+
+    Private Sub IniciarTransicionMenuNdc(esperaMs As Integer, motivo As String)
         transicionMenuNdcPendiente = True
-        transicionMenuNdcVigenteHasta = DateTime.Now.AddMilliseconds(ObtenerEsperaTransicionMenuNdcMs())
+        If esperaMs < 250 Then esperaMs = 250
+        If esperaMs > 15000 Then esperaMs = 15000
+        transicionMenuNdcVigenteHasta = DateTime.Now.AddMilliseconds(esperaMs)
 
         If timer701TransicionMenu IsNot Nothing Then
             timer701TransicionMenu.Stop()
         End If
 
-        Trace("Transicion menu/NDC iniciada; los 701 prematuros se diferiran por " &
+        Trace("Transicion " & motivo & " iniciada; los 701 prematuros se diferiran por " &
               ObtenerTiempoRestanteTransicionMenuNdcMs().ToString() & " ms")
     End Sub
+
+    Private Function ObtenerEspera701NativoMenuMs() As Integer
+        Dim valor As Integer = 700
+
+        Try
+            Dim valorIni As String = ReadIni("PARAM", "NATIVE_701_MENU_GRACE_MS", ConfigManager.ScreensFile).Trim()
+            If valorIni <> "" Then Integer.TryParse(valorIni, valor)
+        Catch ex As Exception
+            Trace("No se pudo leer NATIVE_701_MENU_GRACE_MS: " & ex.Message, 1)
+        End Try
+
+        If valor < 250 Then valor = 250
+        If valor > 3000 Then valor = 3000
+        Return valor
+    End Function
+
+    Private Function ObtenerProteccionFastCash300Ms() As Integer
+        Dim valor As Integer = 2500
+
+        Try
+            Dim valorIni As String = ReadIni("PARAM", "FASTCASH_IGNORE_300_MS", ConfigManager.ScreensFile).Trim()
+            If valorIni <> "" Then Integer.TryParse(valorIni, valor)
+        Catch ex As Exception
+            Trace("No se pudo leer FASTCASH_IGNORE_300_MS: " & ex.Message, 1)
+        End Try
+
+        If valor < 500 Then valor = 500
+        If valor > 8000 Then valor = 8000
+        Return valor
+    End Function
+
+    Private Function DebeDiferir701DesdePantallaNativa() As Boolean
+        If transicionMenuNdcPendiente Then Return False
+        If bNDCPageActive Then Return False
+        If sMenuActivo <> "" Then Return False
+
+        Return currentScreen = "pantalla_nativa_texto" OrElse
+               currentScreen = "pantalla_nativa_texto_esperando_701"
+    End Function
+
+    Private Function FastCashProtegidoContra300() As Boolean
+        Return DateTime.Now <= fastCashProtegidoHasta
+    End Function
 
     Private Function ObtenerEsperaTransicionMenuNdcMs() As Integer
         Dim valorDefault As Integer = If(transicionRetiroFastCashPendiente, 8000, 4000)
@@ -906,6 +959,7 @@ Public Class Form1
 
         transicionMenuNdcPendiente = False
         transicionRetiroFastCashPendiente = False
+        transicionMenuNdcVigenteHasta = DateTime.MinValue
     End Sub
 
     Private Sub Timer701TransicionMenu_Tick(sender As Object, e As EventArgs)
@@ -1782,8 +1836,22 @@ Public Class Form1
                         allowScreen = False
                     ElseIf sValue = "300" AndAlso sFastCashActivo <> "" AndAlso
                            EsUrlFastCash(currentScreen) AndAlso Not bFaltaBilletesDesdeMenu Then
-                        bFastCashWaitActivo = True
-                        Trace("FastCash activo entra a wait; si llega 701 se regresará a FastCash")
+                        If FastCashProtegidoContra300() Then
+                            bFastCashWaitActivo = False
+                            If waitRegresoActivo Then OcultarWaitRegreso()
+                            Me.Show()
+                            WebBrowser1.BringToFront()
+                            Trace("300 residual ignorado: FastCash ya esta visible")
+                            allowScreen = False
+                        Else
+                            bFastCashWaitActivo = True
+                            Trace("FastCash activo entra a wait; si llega 701 se regresará a FastCash")
+                        End If
+                    ElseIf sValue = "701" AndAlso DebeDiferir701DesdePantallaNativa() Then
+                        IniciarTransicionMenuNdc(ObtenerEspera701NativoMenuMs(), "701 nativo/menu")
+                        Posponer701TransicionMenu()
+                        Trace("701 diferido desde pantalla nativa para esperar menu NDC real")
+                        allowScreen = False
                     End If
 
                     If sValue = "701" AndAlso DateTime.Now < tiempoBloqueo701 Then
@@ -2291,8 +2359,93 @@ Public Class Form1
         Return ""
     End Function
 
+    Private Function EsCancelacionComision(sPotition As String, estadoAccion As String) As Boolean
+        Try
+            If sPotition <> "1" Then Return False
+
+            Dim estado As String = If(estadoAccion, "").Trim()
+            If estado = "7980" OrElse estado = "2798" Then Return True
+
+            Return currentScreen IsNot Nothing AndAlso
+                   currentScreen.ToLowerInvariant().Contains("comision.html")
+        Catch ex As Exception
+            Trace("[EsCancelacionComision] Error: " & ex.Message)
+        End Try
+
+        Return False
+    End Function
+
+    Private Sub LimpiarCancelacionComisionPendiente(origen As String)
+        If timerOcultarCancelacionComision IsNot Nothing Then timerOcultarCancelacionComision.Stop()
+        ocultamientoCancelacionComisionPendiente = False
+
+        If Not cancelacionComisionPendiente Then Exit Sub
+
+        cancelacionComisionPendiente = False
+        Trace("Cancelacion de comision finalizada: " & origen)
+    End Sub
+
+    Private Function ObtenerEsperaOcultarCancelacionComisionMs() As Integer
+        Dim valor As Integer = 1500
+
+        Try
+            Dim valorIni As String = ReadIni("PARAM", "COMISION_CANCEL_513_HIDE_DELAY_MS", ConfigManager.ScreensFile).Trim()
+            If valorIni <> "" Then Integer.TryParse(valorIni, valor)
+        Catch ex As Exception
+            Trace("No se pudo leer COMISION_CANCEL_513_HIDE_DELAY_MS: " & ex.Message, 1)
+        End Try
+
+        If valor < 250 Then valor = 250
+        If valor > 5000 Then valor = 5000
+        Return valor
+    End Function
+
+    Private Sub ProgramarOcultamientoCancelacionComision()
+        Try
+            If timerOcultarCancelacionComision Is Nothing Then
+                timerOcultarCancelacionComision = New Timer()
+                AddHandler timerOcultarCancelacionComision.Tick, AddressOf TimerOcultarCancelacionComision_Tick
+            End If
+
+            MostrarWaitRegreso()
+            ocultamientoCancelacionComisionPendiente = True
+
+            timerOcultarCancelacionComision.Stop()
+            timerOcultarCancelacionComision.Interval = ObtenerEsperaOcultarCancelacionComisionMs()
+            timerOcultarCancelacionComision.Start()
+
+            Trace("513 de cancelacion de comision recibido; wait se conserva " &
+                  timerOcultarCancelacionComision.Interval.ToString() &
+                  " ms antes de mostrar la cancelacion nativa")
+        Catch ex As Exception
+            Trace("Error programando ocultamiento de cancelacion de comision: " & ex.Message, 2)
+            LimpiarCancelacionComisionPendiente("error programando 513")
+            ocultarPantalla()
+        End Try
+    End Sub
+
+    Private Sub TimerOcultarCancelacionComision_Tick(sender As Object, e As EventArgs)
+        Try
+            If timerOcultarCancelacionComision IsNot Nothing Then timerOcultarCancelacionComision.Stop()
+            If Not ocultamientoCancelacionComisionPendiente Then Exit Sub
+
+            ocultamientoCancelacionComisionPendiente = False
+            LimpiarCancelacionComisionPendiente("513 diferido")
+
+            If webBrowserWaitRegreso IsNot Nothing Then webBrowserWaitRegreso.Visible = False
+            waitRegresoActivo = False
+            ocultarPantalla()
+
+            Trace("Cancelacion de comision: appScreens oculto despues de espera 513")
+        Catch ex As Exception
+            Trace("Error ocultando cancelacion de comision diferida: " & ex.Message, 2)
+        End Try
+    End Sub
+
     Public Sub clickPage(sPotition As String)
         Dim estadoAlPresionar As String = ResolverEstadoAccionActual(sCurrent)
+        Dim esCancelacionComisionActual As Boolean = EsCancelacionComision(sPotition, estadoAlPresionar)
+
         Try
             Dim descripcionFdk As String = BuscarAccionFdk(estadoAlPresionar, sPotition)
             TraceAccionUsuario("FDK presionado=" & sPotition & " (" & descripcionFdk &
@@ -2408,6 +2561,12 @@ Public Class Form1
                 Case "7" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 574)
                 Case "8" : ClickEnVentana.SimularClickEnVentana(screenEventTo, 850, 713)
             End Select
+
+            If esCancelacionComisionActual Then
+                cancelacionComisionPendiente = True
+                MostrarWaitRegreso()
+                Trace("Comision: FDK1 (No) enviado; wait activo hasta recibir cierre/cancelacion")
+            End If
 
             If esInicioRetiroFastCash Then
                 transicionRetiroFastCashPendiente = True
@@ -2976,6 +3135,10 @@ Public Class Form1
         End If
 
         If sUrl <> "" Then
+            If cancelacionComisionPendiente Then
+                LimpiarCancelacionComisionPendiente("NDC con PAGE " & sPage)
+            End If
+
             CompletarTransicionMenuNdc()
 
             Dim sUrlLower As String = sUrl.ToLower()
@@ -3038,6 +3201,7 @@ Public Class Form1
                 urlFastCashGlobal = sUrl
                 sFastCashActivo = sUrl
                 bFastCashWaitActivo = False
+                fastCashProtegidoHasta = DateTime.Now.AddMilliseconds(ObtenerProteccionFastCash300Ms())
             End If
 
             If esPaginaMenu Then
@@ -3257,6 +3421,40 @@ Public Class Form1
             Permitir701ImpresionMenuPendiente()
         End If
 
+        If sValue = "513" AndAlso cancelacionComisionPendiente Then
+            transicionMenuNdcVigenteHasta = DateTime.MinValue
+            CompletarTransicionMenuNdc()
+
+            regresoNativo024Activo = False
+            regresoMenuMorePendiente = False
+            toqueRegresoNativoDetectado = False
+            Timer1.Interval = 300
+
+            bNDCPageActive = False
+            sExp850OriginalUrl = ""
+            sExp852OriginalUrl = ""
+            sErrorImpresora = ""
+            sErrorCdm = ""
+            isExpetionClosePageNDC = False
+            bFaltaBilletesDesdeMenu = False
+            bFastCashWaitActivo = False
+            sFastCashActivo = ""
+            urlFastCashGlobal = ""
+            fastCashProtegidoHasta = DateTime.MinValue
+            baseScreenIsOnException = False
+
+            Trace("Limpieza de banderas por estado 513: hostError/excepcionNDC")
+            If WebBrowser1 IsNot Nothing AndAlso WebBrowser1.Document IsNot Nothing Then
+                Try
+                    WebBrowser1.Document.InvokeScript("showBtnRetiro")
+                Catch ex As Exception
+                End Try
+            End If
+
+            ProgramarOcultamientoCancelacionComision()
+            Exit Sub
+        End If
+
         If sValue = "300" Then
             If ProteccionMontosRSTActiva() Then
                 RetirarCoberturaMontosRST("300 residual")
@@ -3428,6 +3626,7 @@ Public Class Form1
 
         If sValue = "welcome" OrElse sValue = "500" OrElse sValue = "hide" Then
             keepCancelPageActive = False
+            LimpiarCancelacionComisionPendiente(sValue)
         End If
 
         If keepCancelPageActive AndAlso (sValue = "513" OrElse sValue = "701") Then
@@ -3476,6 +3675,7 @@ Public Class Form1
             bFastCashWaitActivo = False
             sFastCashActivo = ""
             urlFastCashGlobal = ""
+            fastCashProtegidoHasta = DateTime.MinValue
             baseScreenIsOnException = False
 
             If sValue = "500" Then
@@ -4586,22 +4786,26 @@ Public Class Form1
                     End If
 
                     If waitRegresoActivo Then
-                        If timeoutVisualEsperandoBack Then
-                            timeoutVisualEsperandoBack = False
-                            timeoutWaitMostradoPorToque = False
-                            If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
-                            Trace("Timeout visual: wait retirado por HTML cargado")
-                        End If
-
-                        OcultarWaitRegreso()
-
-                        If navegacionFastCashCubierta Then
-                            Trace("Cobertura de espera retirada; FastCash ya esta listo")
+                        If cancelacionComisionPendiente Then
+                            Trace("Wait de cancelacion de comision conservado hasta 513/500")
                         Else
-                            Trace("Wait de regreso retirado despues de cargar el HTML final")
-                        End If
+                            If timeoutVisualEsperandoBack Then
+                                timeoutVisualEsperandoBack = False
+                                timeoutWaitMostradoPorToque = False
+                                If timerOcultarWaitTimeout IsNot Nothing Then timerOcultarWaitTimeout.Stop()
+                                Trace("Timeout visual: wait retirado por HTML cargado")
+                            End If
 
-                        navegacionFastCashCubierta = False
+                            OcultarWaitRegreso()
+
+                            If navegacionFastCashCubierta Then
+                                Trace("Cobertura de espera retirada; FastCash ya esta listo")
+                            Else
+                                Trace("Wait de regreso retirado despues de cargar el HTML final")
+                            End If
+
+                            navegacionFastCashCubierta = False
+                        End If
                     End If
 
                     If backVisualPendiente AndAlso
